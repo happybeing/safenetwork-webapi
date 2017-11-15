@@ -1,0 +1,31 @@
+{
+  "name": "solid-safenetwork",
+  "version": "0.0.1",
+  "description": "SafeNetwork backend for SOLID applications (provides LDP interface via either RESTful operations or fetch() shim)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo No lib tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thewebalyst/solid-safenetwork.git"
+  },
+  "keywords": [
+    "SOLID",
+    "LinkedData",
+    "LDP",
+    "SafeNetwork",
+    "library",
+    "JavaScript",
+    "Browser"
+  ],
+  "author": "Mark Hughes",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/thewebalyst/solid-safenetwork/issues"
+  },
+  "homepage": "https://github.com/thewebalyst/solid-safenetwork#readme",
+  "devDependencies": {
+    "webpack": "^3.8.1"
+  }
+}
