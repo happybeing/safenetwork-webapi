@@ -1,7 +1,7 @@
 {
   "name": "solid-safenetwork",
   "version": "0.0.1",
-  "description": "SafeNetwork backend for SOLID applications (provides LDP interface via either RESTful operations or fetch() shim)",
+  "description": "SafeNetwork backend for SOLID applications (LDP interface via either RESTful operations or fetch() shim)",
   "main": "index.js",
   "scripts": {
     "test": "echo No lib tests"
