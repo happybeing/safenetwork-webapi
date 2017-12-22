@@ -4,7 +4,8 @@
   "description": "SafeNetwork backend for SOLID applications (LDP interface via either RESTful operations or fetch() shim)",
   "main": "index.js",
   "scripts": {
-    "test": "echo No lib tests"
+    "test": "echo No lib tests",
+    "build": "webpack  --verbose --colors --config webpack.config.js"
   },
   "repository": {
     "type": "git",
@@ -27,5 +28,10 @@
   "homepage": "https://github.com/thewebalyst/solid-safenetwork#readme",
   "devDependencies": {
     "webpack": "^3.8.1"
+  },
+  "dependencies": {
+    "debug": "^3.1.0",
+    "isomorphic-fetch": "^2.2.1",
+    "proto-fetch": "^1.0.0"
   }
 }
