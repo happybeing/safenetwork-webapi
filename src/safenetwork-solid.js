@@ -264,8 +264,8 @@ const defaultPerms = {
 // Safe API object, used by rdflib.js to access the API
 //
 var SafenetworkLDP = function (enable) {
-  this._safeUriEnable = (enable == undefined ? true : enable)
-  safeLog('SafenetworkLDP(%s)', this._safeUriEnable)
+  this._safeUriEnabled = (enable == undefined ? true : enable)
+  safeLog('SafenetworkLDP(%s)', this._safeUriEnabled)
 
 /* TODO:
   rdf.safenetworkLDP = this;
@@ -290,7 +290,7 @@ SafenetworkLDP.prototype = {
   _nfsRoot:         null,   // Handle for nfs emulation
 
   // Defaults (could be made configurable)
-  _safeUriEnabled:  false,  // Enable Fetcher.js fetchUri() for safe: URLs
+  _safeUriEnabled:  true,   // Enable Fetcher.js fetchUri() for safe: URLs
   _authImmediately: true,   // Trigger auth on Congigure() / Enable(true)
   _authOnAccess:    false,  // Trigger auth on safe: access
   _authOnWrite:     false,  // Trigger auth on safe: PUT/POST/DELETE/PATCH
@@ -308,6 +308,7 @@ SafenetworkLDP.prototype = {
   // @param appConfig      - app details for UI (see example above)
   // @param appPermissions - (optional) requested permissions for SAFE storage (see example above)
   Configure: function (rdflib,solidConfig,appConfig,appPermissions){
+    safeLog('Configure(%o,%O,%O,%O)',rdflib,solidConfig,appConfig,appPermissions)
     if (rdflib != undefined && rdflib){
         //TODO maybe handle case where rdflib already has SAFE App state (copy to self first?)
         rdflib.SafenetworkLDP = this;
@@ -316,7 +317,7 @@ SafenetworkLDP.prototype = {
     this._solidConfig = solidConfig
     this._safeAppConfig = appConfig
     this._safeAppPermissions = ( appPermissions != undefined ? appPermissions : defaultPerms)
-    this.Enable(this._safeUriEnabled && this._solidConfig && this._safeAppConfig && this._appPermissions)
+    this.Enable(this._safeUriEnabled && this._solidConfig && this._safeAppConfig && this._safeAppPermissions)
   },
 
   Enable: function (flag){
@@ -324,7 +325,7 @@ SafenetworkLDP.prototype = {
     this._safeUriEnabled = flag;
 
     if ( flag && this._authImmediately )
-      safenetworkAuthorise()
+      this.safenetworkAuthorise()
   },
 
   // Synchronous authorisation with SAFE Network
@@ -341,51 +342,56 @@ SafenetworkLDP.prototype = {
 
   safenetworkAuthorise: function (){
     safeLog('safenetworkAuthorise()...');
-    freeSafeAPI();
 
     var self = this;
+    self.freeSafeAPI();
 
-    window.safeApp.initialise(self._appConfig, (newState) => {
+    window.safeApp.initialise(self._safeAppConfig, (newState) => {
         // Callback for network state changes
         safeLog('SafeNetwork state changed to: ', newState)
         this._connected = newState;
       }).then((appHandle) => {
         safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
 
-        window.safeApp.authorise(appHandle, self._appPermissions, self._appConfig.options)
+        window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
         .then((authUri) => {
           safeLog('SAFEApp was authorised and authUri received: ', authUri);
           window.safeApp.connectAuthorised(appHandle, authUri)
           .then(_ => {
             safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
 
-            self._getMdHandle(appHandle)
-            .then((mdHandle) => {
-              if (mdHandle){
-                self.configure({
-                  appHandle: appHandle,   // safeApp.initialise() return (appHandle)
-                  authURI: authUri,       // safeApp.authorise() return (authUri)
-                  permissions: self._appPermissions, // Permissions used to request authorisation
-                  options: self._appConfig.options, // Options used to request authorisation
-                });
-                safeLog('SAFEApp authorised and configured');
-                self._isAuthorised = true;
-              }
-            }, function (err){
-              self.reflectNetworkStatus(false); safeLog('SAFEApp SafeNetwork getMdHandle() failed: ' + err);
-              freeSafeAPI();
+            window.safeApp.refreshContainersPermissions(appHandle).then(_ => {
+              self._getMdHandle(appHandle).then((mdHandle) => {
+                if (mdHandle){
+                  self.configure({
+                    appHandle: appHandle,   // safeApp.initialise() return (appHandle)
+                    authURI: authUri,       // safeApp.authorise() return (authUri)
+                    permissions: self._safeAppPermissions, // Permissions used to request authorisation
+                    options: self._safeAppConfig.options, // Options used to request authorisation
+                  });
+                  safeLog('SAFEApp authorised and configured');
+                  self._isAuthorised = true;
+                }
+              }, function (err){
+                self.reflectNetworkStatus(false);
+                safeLog('SAFEApp SafeNetwork getMdHandle() failed: ' + err);
+                self.freeSafeAPI();
+              });
             });
           }, function (err){
-            self.reflectNetworkStatus(false); safeLog('SAFEApp SafeNetwork Connect Failed: ' + err);
-            freeSafeAPI();
+            self.reflectNetworkStatus(false);
+            safeLog('SAFEApp SafeNetwork Connect Failed: ' + err);
+            self.freeSafeAPI();
           });
         }, function (err){
-          self.reflectNetworkStatus(false); safeLog('SAFEApp SafeNetwork Authorisation Failed: ' + err);
-          freeSafeAPI();
+          self.reflectNetworkStatus(false);
+          safeLog('SAFEApp SafeNetwork Authorisation Failed: ' + err);
+          self.freeSafeAPI();
         });
       }, function (err){
-        self.reflectNetworkStatus(false); safeLog('SAFEApp SafeNetwork Initialise Failed: ' + err);
-        freeSafeAPI();
+        self.reflectNetworkStatus(false);
+        safeLog('SAFEApp SafeNetwork Initialise Failed: ' + err);
+        self.freeSafeAPI();
       });
 
   },
@@ -433,36 +439,43 @@ SafenetworkLDP.prototype = {
 
   fetch: function (docUri, options){
     safeLog('SafenetworkLDP.fetch(%s,%o)...', docUri, options)
+    var self = this;
 //    return httpFetch(docUri,options) // TESTING so pass through
 
-    if (!this.isEnabled())
+    if (!self.isEnabled()){
+      safeLog('WARNING: safe:// URI handling is not enabled so this will fail')
       return httpFetch(docUri,options);
+    }
 
     let allowAuthOn401 = true;
     let result = new Promise((resolve,reject) => {
-      assert('safe' == protocol(docUri))
+      console.assert('safe' == protocol(docUri),protocol(docUri))
 
-      if (!this._isAuthorised){
-        if (this._authOnAccess ||
-            this._authOnWrite && (['POST','PUT','DELETE','PATCH'].indexOf(options.method) != -1) ){
+      if (!self._isAuthorised){
+        if (self._authOnAccess ||
+            self._authOnWrite && (['POST','PUT','DELETE','PATCH'].indexOf(options.method) != -1) ){
           return safenetworkAuthorise().then(_ => {
-              return this.fetch(docuri,options)
+              return self._fetch(docuri,options).then((fetchResponse) => {
+                return resolve(fetchResponse)
+              });
             });
         }
       }
       else {
-        return this.fetch(docuri,options)
+        return self._fetch(docuri,options)
         .then((fetchResponse) => {
-          return fetchResponse
+          return resolve(fetchResponse)
         },(err) => {
-          if (err.status == '401' && this._authOnAccessDenied && allowAuthOn401){
+          if (err.status == '401' && self._authOnAccessDenied && allowAuthOn401){
             allowAuthOn401 = false; // Once per fetch attempt
             return safenetworkAuthorise().then(_ => {
-                return this.fetch(docuri,options)
+                return self._fetch(docuri,options).then((fetchResponse) => {
+                  return resolve(fetchResponse)
+                });
               });
           }
           else
-            return err;
+            return reject(err);
         });
       }
     });
@@ -489,20 +502,18 @@ SafenetworkLDP.prototype = {
   _fetch: function(docuri,options){
     safeLog('_fetch(%s:%s,{%o})...',options.method,docuri,options)
 
-    // Map URI to LDP storage location
-    let docPath = pathpart(docuri)
 
-    /**
-     * REMOVE THIS COMMENT AFTER...
-     * TODO refactor to implement Safenetwork service 'solid' (cf 'www')
-     *
-     // TODO maybe: use ldp service specific container rather than _public?
-     // TODO maybe: use a wrapper to get the MD for the solid service for the public id (domain)
-     // TODO cache them for subsequent use (limit cache to N MDs)
-     *
-     * How to handle different public ids on the same account?
-     *   -> keep a map to cache solid service MD corresponding to each public id (domain)
-     */
+    // REMOVE THESE COMMENTS AFTER...
+    // TODO refactor to implement Safenetwork service 'solid' (cf 'www')
+    // Until then, ignore public id part of URL ('domain'):
+    let docPath = pathpart(docuri)    // Map URI to LDP storage location
+
+    // TODO maybe: use ldp service specific container rather than _public?
+    // TODO maybe: use a wrapper to get the MD for the solid service for the public id (domain)
+    // TODO cache them for subsequent use (limit cache to N MDs)
+    // How to handle different public ids on the same account?
+    //   -> keep a map to cache solid service MD corresponding to each public id (domain)
+
 
     /** TODO handle special cases:
       *   create container - always returns success
@@ -571,40 +582,40 @@ SafenetworkLDP.prototype = {
   // or null
   // App must already be authorised (see safeAuthorise())
   _getMdHandle: function (appHandle) {
-    self = this;
+    self = this
 
     let result = new Promise((resolve,reject) => {
-      if (self.mdHandle){
-        resolve(self.mdHandle);
+      if (self._mdRoot && self._nfsRoot){
+        resolve(self._mdRoot)
       }
       else {
-        window.safeApp.canAccessContainer(appHandle, '_public', ['Insert', 'Update', 'Delete'])
+        return window.safeApp.canAccessContainer(appHandle, '_public', ['Read'])//['Insert', 'Update', 'Delete'])
         .then((r) => {
           if (r) {
           safeRsLog('The app has been granted permissions for `_public` container');
-          window.safeApp.getContainer(appHandle, '_public')
+          return window.safeApp.getContainer(appHandle, '_public')
            .then((mdHandle) => {
-             self.mdRoot = mdHandle;
-             window.safeMutableData.emulateAs(self.mdRoot, 'NFS')
+             self._mdRoot = mdHandle
+             return window.safeMutableData.emulateAs(self._mdRoot, 'NFS')
                .then((nfsHandle) => {
-                 self.nfsRoot = nfsHandle;
-                 safeRsLog('_getMdHandle() mdRoot:  ' + self.mdRoot);
-                 safeRsLog('_getMdHandle() nfsRoot: ' + self.nfsRoot);
-                 resolve(mdHandle); // Return mdHandle only if we have the
-                                    // nfsHandle
+                 self._nfsRoot = nfsHandle
+                 safeRsLog('_getMdHandle() mdRoot:  ' + self._mdRoot)
+                 safeRsLog('_getMdHandle() nfsRoot: ' + self._nfsRoot)
+                 resolve(self._mdRoot) // Return mdRoot only if also have nfsHandle
                }, (err) => { // mrhTODO how to handle in UI?
-                 safeRsLog('SafeNetwork failed to access container');
-                 log(err);
-                 window.safeMutableData.free(self.mdRoot);
-                 self.mdRoot = null;
-                 reject(null);
+                 safeRsLog('SafeNetwork failed to access container')
+                 log(err)
+                 window.safeMutableData.free(self._mdRoot)
+                 self._mdRoot = null
+                 reject(err)
                });
              });
           }
         },
         (err) => {
-          safeRsLog('The app has been DENIED permissions for `_public` container');
-          safeRsLog('' + err);
+          safeRsLog('The app has been DENIED permissions for `_public` container')
+          safeRsLog('' + err)
+          reject(err)
         });
       }
     });
@@ -913,11 +924,11 @@ SafenetworkLDP.prototype = {
       }
 
       if ( fullPath.substr(-1) !== '/') {
-          safeRsLog('safeNfs.delete() param self.nfsRoot: ' + self.nfsRoot);
+          safeRsLog('safeNfs.delete() param self._nfsRoot: ' + self._nfsRoot);
           safeRsLog('                 param fullPath: ' + fullPath);
           safeRsLog('                 param version: ' + fileInfo.version);
           safeRsLog('                 param containerVersion: ' + fileInfo.containerVersion);
-          return window.safeNfs.delete(self.nfsRoot, fullPath, fileInfo.version + 1).then(function (success){
+          return window.safeNfs.delete(self._nfsRoot, fullPath, fileInfo.version + 1).then(function (success){
             // mrhTODO must handle: if file doesn't exist also do
             // self._fileInfoCache.delete(fullPath);
 
@@ -990,11 +1001,11 @@ SafenetworkLDP.prototype = {
       }
       else {
         // Store content as new immutable data (pointed to by fileHandle)
-        return window.safeNfs.create(self.nfsRoot, body).then((fileHandle) => {
+        return window.safeNfs.create(self._nfsRoot, body).then((fileHandle) => {
           // mrhTODO set file metadata (contentType) - how?
 
           // Add file to directory (by inserting fileHandle into container)
-          return window.safeNfs.update(self.nfsRoot, fileHandle, fullPath, fileInfo.containerVersion + 1).then((fileHandle) => {
+          return window.safeNfs.update(self._nfsRoot, fileHandle, fullPath, fileInfo.containerVersion + 1).then((fileHandle) => {
             self._updateFileInfo(fileHandle, fullPath);
 
             // self._shareIfNeeded(fullPath); // mrhTODO what's this?
@@ -1033,11 +1044,11 @@ SafenetworkLDP.prototype = {
     var self = this;
     var result = new Promise((resolve,reject) => {
       // Store content as new immutable data (pointed to by fileHandle)
-      return window.safeNfs.create(self.nfsRoot, body).then(function (fileHandle) {
+      return window.safeNfs.create(self._nfsRoot, body).then(function (fileHandle) {
         // mrhTODOx set file metadata (contentType) - how?
 
         // Add file to directory (by inserting fileHandle into container)
-        return window.safeNfs.insert(self.nfsRoot, fileHandle, fullPath).then(function (fileHandle) {
+        return window.safeNfs.insert(self._nfsRoot, fileHandle, fullPath).then(function (fileHandle) {
           // self._shareIfNeeded(fullPath); // mrhTODO what's this?
 
           var response = { statusCode: ( fileHandle ? 200 : 400  ) }; // mrhTODO currently just a response that resolves to truthy (may be exteneded to return status?)
@@ -1086,11 +1097,11 @@ SafenetworkLDP.prototype = {
         return Promise.resolve({statusCode: 304});
       }
 
-      return window.safeNfs.fetch(self.nfsRoot, fullPath)
+      return window.safeNfs.fetch(self._nfsRoot, fullPath)
         .then((fileHandle) => {
           safeRsLog('fetched fileHandle: ' + fileHandle.toString());
           self.fileHandle = fileHandle; // mrhTODOx need setter to compare & free if new fileHandle
-          return window.safeNfs.open(self.nfsRoot,fileHandle,4/* read */)
+          return window.safeNfs.open(self._nfsRoot,fileHandle,4/* read */)
           .then((fileHandle) => {
             safeRsLog('safeNfs.open() returns fileHandle: ' + fileHandle.toString());
             self.openFileHandle = fileHandle;
@@ -1213,7 +1224,7 @@ _getFolder: function (fullPath, options) {
     return new Promise((resolve,reject) => {
       // Create listing by enumerating container keys beginning with fullPath
       const directoryEntries = [];
-      return window.safeMutableData.getEntries(self.mdRoot)
+      return window.safeMutableData.getEntries(self._mdRoot)
       .then((entriesHandle) => window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
         // Skip deleted entries
         if (v.buf.length == 0){
@@ -1273,7 +1284,7 @@ _getFolder: function (fullPath, options) {
         else {  // File entry:
             try {
             safeRsLog('DEBUG: window.safeNfs.fetch(' + fileInfo.fullPath + ')...');
-            return window.safeNfs.fetch(self.nfsRoot, fileInfo.fullPath)
+            return window.safeNfs.fetch(self._nfsRoot, fileInfo.fullPath)
             .then((fileHandle) => self._makeFileInfo(fileHandle, fileInfo, fileInfo.fullPath)
             .then((fileInfo) => {
 
@@ -1357,7 +1368,7 @@ _getFolder: function (fullPath, options) {
 
       // Not yet cached or doesn't exist
       // Load parent folder listing update _fileInfoCache.
-      return window.safeMutableData.getVersion(self.mdRoot).then((rootVersion) => {
+      return window.safeMutableData.getVersion(self._mdRoot).then((rootVersion) => {
 
 /* TODO there seems no point calling _getFileInfo on a folder so could just
 let that trigger an error in this function, then fix the call to handle differently
