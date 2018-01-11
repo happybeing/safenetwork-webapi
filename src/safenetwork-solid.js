@@ -146,7 +146,7 @@ const docpart = function (uri) {
 // Return full document path from root (strips host and fragment)
 const pathpart = function (uri) {
   let prePath = hostpart(uri)
-  return docpart(uri.slice( prePath.len() ))
+  return docpart(uri.slice( prePath.length ))
 }
 
 const hostpart = function (u) {
@@ -257,8 +257,7 @@ const appCfg = {
 // Default SAFE Auth permissions to request. Optional parameter to Configure()
 const defaultPerms = {
   // TODO is this right for solid service container (ie solid.<safepublicid>)
-  _public: ['Insert'],         // request to insert into `_public` container
-  _other: ['Insert', 'Update'] // request to insert and update in `_other` container
+  _public: ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
 }
 
 // Safe API object, used by rdflib.js to access the API
@@ -285,6 +284,8 @@ SafenetworkLDP.prototype = {
 //???  _isPathShared: true,      // App private storage mrhTODO shared or
                                  // private? app able to control?
 
+  // SAFE App state: all are valid (non-null) or all are null
+  _appHandle:       null,   // From DOM API window.safeApp.authorise()
   _mdRoot:          null,   // Handle for root mutable data (mrhTODO:
                             // initially maps to _public)
   _nfsRoot:         null,   // Handle for nfs emulation
@@ -292,7 +293,7 @@ SafenetworkLDP.prototype = {
   // Defaults (could be made configurable)
   _safeUriEnabled:  true,   // Enable Fetcher.js fetchUri() for safe: URLs
   _authImmediately: true,   // Trigger auth on Congigure() / Enable(true)
-  _authOnAccess:    false,  // Trigger auth on safe: access
+  _authOnAccess:    true,   // Trigger auth on safe: access
   _authOnWrite:     false,  // Trigger auth on safe: PUT/POST/DELETE/PATCH
   _authOnError401:  true,   // Trigger auth on not auth error, and retry
 
@@ -300,6 +301,9 @@ SafenetworkLDP.prototype = {
   _safeAppConfig: {},       // Supplied by the App (see above)
   _safeAppPermissions: {},  // Supplied by the App (see above)
 
+  _connected: false,        // SAFEnetwork connection status
+
+  isConnected: function (){    return this._connected },
   isEnabled: function (){      return this._safeUriEnabled },
 
   // Application must provide config and permissions for writeable store
@@ -337,7 +341,7 @@ SafenetworkLDP.prototype = {
 /**
  * Explicitly authorise with Safenetwork using config already provided
  *
- * @returns true on successful authorisation, false if not
+ * @returns Promise which resolves true on successful authorisation, false if not
  */
 
   safenetworkAuthorise: function (){
@@ -346,54 +350,64 @@ SafenetworkLDP.prototype = {
     var self = this;
     self.freeSafeAPI();
 
-    window.safeApp.initialise(self._safeAppConfig, (newState) => {
-        // Callback for network state changes
-        safeLog('SafeNetwork state changed to: ', newState)
-        this._connected = newState;
-      }).then((appHandle) => {
-        safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
+    let result = new Promise((resolve,reject) => {
+      return window.safeApp.initialise(self._safeAppConfig, (newState) => {
+          // Callback for network state changes
+          safeLog('SafeNetwork state changed to: ', newState)
+          self._connected = newState
+        }).then((appHandle) => {
+          safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
 
-        window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
-        .then((authUri) => {
-          safeLog('SAFEApp was authorised and authUri received: ', authUri);
-          window.safeApp.connectAuthorised(appHandle, authUri)
-          .then(_ => {
-            safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
+          return window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
+          .then((authUri) => {
+            safeLog('SAFEApp was authorised and authUri received: ', authUri);
+            return window.safeApp.connectAuthorised(appHandle, authUri)
+            .then(_ => {
+              safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
 
-            window.safeApp.refreshContainersPermissions(appHandle).then(_ => {
-              self._getMdHandle(appHandle).then((mdHandle) => {
-                if (mdHandle){
-                  self.configure({
-                    appHandle: appHandle,   // safeApp.initialise() return (appHandle)
-                    authURI: authUri,       // safeApp.authorise() return (authUri)
-                    permissions: self._safeAppPermissions, // Permissions used to request authorisation
-                    options: self._safeAppConfig.options, // Options used to request authorisation
-                  });
-                  safeLog('SAFEApp authorised and configured');
-                  self._isAuthorised = true;
-                }
-              }, function (err){
-                self.reflectNetworkStatus(false);
-                safeLog('SAFEApp SafeNetwork getMdHandle() failed: ' + err);
-                self.freeSafeAPI();
+              // TODO remove refreshContainersPermissions() step - was introduced while tracing a bug!
+              return window.safeApp.refreshContainersPermissions(appHandle).then(_ => {
+                return self._getAndSafeHandles(appHandle).then((mdHandle) => {
+                  if (mdHandle){
+                    // TODO consider store authUri and other user related settings in browser localStorage?
+                    /* self.configure({
+                      appHandle: _appHandle,   // safeApp.initialise() return (appHandle)
+                      authURI: authUri,       // safeApp.authorise() return (authUri)
+                      permissions: self._safeAppPermissions, // Permissions used to request authorisation
+                      options: self._safeAppConfig.options, // Options used to request authorisation
+                    });*/
+                    safeLog('SAFEApp authorised and configured');
+                    self._isAuthorised = true;
+                    resolve(true)
+                  }
+                }, function (err){
+                  self.reflectNetworkStatus(false);
+                  safeLog('SAFEApp SafeNetwork getMdHandle() failed: ' + err);
+                  self.freeSafeAPI();
+                  reject(false)
+                });
               });
+            }, function (err){
+              self.reflectNetworkStatus(false);
+              safeLog('SAFEApp SafeNetwork Connect Failed: ' + err);
+              self.freeSafeAPI();
+              reject(false)
             });
           }, function (err){
             self.reflectNetworkStatus(false);
-            safeLog('SAFEApp SafeNetwork Connect Failed: ' + err);
+            safeLog('SAFEApp SafeNetwork Authorisation Failed: ' + err);
             self.freeSafeAPI();
+            reject(false)
           });
         }, function (err){
           self.reflectNetworkStatus(false);
-          safeLog('SAFEApp SafeNetwork Authorisation Failed: ' + err);
+          safeLog('SAFEApp SafeNetwork Initialise Failed: ' + err);
           self.freeSafeAPI();
+          reject(false)
         });
-      }, function (err){
-        self.reflectNetworkStatus(false);
-        safeLog('SAFEApp SafeNetwork Initialise Failed: ' + err);
-        self.freeSafeAPI();
       });
 
+      return result;
   },
 
 /*
@@ -431,7 +445,7 @@ SafenetworkLDP.prototype = {
  * TODO refactor to implement Safenetwork service 'solid' (cf 'www')
  * TODO Implement PATCH (using GET, modify, POST)
  *
- * @param docuri {string}
+ * @param docUri {string}
  * @param options {Object}
  *
  * @returns null if not handled, or a {Promise<Object} on handling a safe: URI
@@ -449,35 +463,33 @@ SafenetworkLDP.prototype = {
 
     let allowAuthOn401 = true;
     let result = new Promise((resolve,reject) => {
-      console.assert('safe' == protocol(docUri),protocol(docUri))
+      //console.assert('safe' == protocol(docUri),protocol(docUri))
 
       if (!self._isAuthorised){
         if (self._authOnAccess ||
             self._authOnWrite && (['POST','PUT','DELETE','PATCH'].indexOf(options.method) != -1) ){
-          return safenetworkAuthorise().then(_ => {
-              return self._fetch(docuri,options).then((fetchResponse) => {
+          return self.safenetworkAuthorise().then(_ => {
+              return self._fetch(docUri,options).then((fetchResponse) => {
                 return resolve(fetchResponse)
               });
             });
         }
       }
-      else {
-        return self._fetch(docuri,options)
-        .then((fetchResponse) => {
-          return resolve(fetchResponse)
-        },(err) => {
-          if (err.status == '401' && self._authOnAccessDenied && allowAuthOn401){
-            allowAuthOn401 = false; // Once per fetch attempt
-            return safenetworkAuthorise().then(_ => {
-                return self._fetch(docuri,options).then((fetchResponse) => {
-                  return resolve(fetchResponse)
-                });
+
+      return self._fetch(docUri,options).then((fetchResponse) => {
+        return resolve(fetchResponse)
+      },(err) => {
+        if (err.status == '401' && self._authOnAccessDenied && allowAuthOn401){
+          allowAuthOn401 = false; // Once per fetch attempt
+          return self.safenetworkAuthorise().then(_ => {
+              return self._fetch(docUri,options).then((fetchResponse) => {
+                return resolve(fetchResponse)
               });
-          }
-          else
-            return reject(err);
-        });
-      }
+            });
+        }
+        else
+          return reject(err);
+      });
     });
 
     return result;
@@ -499,14 +511,14 @@ SafenetworkLDP.prototype = {
  *
  * @returns request result (a Promise)
 */
-  _fetch: function(docuri,options){
-    safeLog('_fetch(%s:%s,{%o})...',options.method,docuri,options)
-
+  _fetch: function(docUri,options){
+    safeLog('_fetch(%s:%s,{%o})...',options.method,docUri,options)
+    let self = this
 
     // REMOVE THESE COMMENTS AFTER...
     // TODO refactor to implement Safenetwork service 'solid' (cf 'www')
     // Until then, ignore public id part of URL ('domain'):
-    let docPath = pathpart(docuri)    // Map URI to LDP storage location
+    let docPath = pathpart(docUri)    // Map URI to LDP storage location
 
     // TODO maybe: use ldp service specific container rather than _public?
     // TODO maybe: use a wrapper to get the MD for the solid service for the public id (domain)
@@ -524,37 +536,55 @@ SafenetworkLDP.prototype = {
       *   TODO check notes in this file and Zim!!!
       */
 
-    let response = {}
-    switch(options.method){
-      case 'GET':
-        response = this.get(docPath,options)
-        // TODO if get() returns 404 (not found) return empty listing to fake existence of empty container
-        if (response.status == 404)
-          safeLog('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
-        break;
+    let result = new Promise((resolve,reject) => {
+      let response = {}
+      switch(options.method){
+        case 'GET':
+          return self.get(docPath,options).then(response => {
+            response.status = response.statusCode // TODO Map remoteStorage implementation until replaced
 
-      case 'POST':
+            // TODO if get() returns 404 (not found) return empty listing to fake existence of empty container
+            if (response.status == 404)
+              safeLog('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
+              return response;
+          });
+          break;
+
+        case 'POST':
+          if (isFolder(docPath))
+            return self.fakeCreateContainer(docPath,options)
+          else // TODO Separate POST from PUT
+            return self.put(docPath,options).then(response => {
+              response.status = response.statusCode // TODO Map remoteStorage implementation until replaced
+              return response;
+            });
+          break;
+
+        case 'PUT':
+          return self.put(docPath,options).then(response => {
+            response.status = response.statusCode // TODO Map remoteStorage implementation until replaced
+            return response;
+          });
+          break;
+
+        case 'DELETE':
         if (isFolder(docPath))
-          response = fakeCreateContainer(docPath,options)
-        response = this.put(docPath,options) // TODO Separate POST from PUT
-        break;
+          return self.fakeDeleteContainer(docPath,options)
+        else // TODO Separate POST from PUT
+          return self.delete(docPath,options).then(response => {
+            response.status = response.statusCode // TODO Map remoteStorage implementation until replaced
+            return response;
+          });
+          break;
 
-      case 'PUT':
-        response = this.put(docPath,options)
-        break;
+        default:
+          return new Response({},{ ok: false, status: 405, statusText: '405 Method Not Allowed'})
+          break
+      }
 
-      case 'DELETE':
-        if (isFolder(docPath))
-          response = fakeDeleteContainer(docPath,options)
-        response = this.delete(docPath,options)
-        break;
+    });
 
-      default:
-        return new Response({},{ ok: false, status: 405, statusText: '405 Method Not Allowed'})
-        break
-    }
-
-    response.status = response.statusCode // Map remoteStorage implementation until replaced
+    return result;
   },
 
   fakeCreateContainer: function (path,options){
@@ -578,11 +608,17 @@ SafenetworkLDP.prototype = {
 
   },
 
-  // Return a Promise which resolves to the mdHandle of the public container,
-  // or null
+  // Ensures all SAFE API handles are either valid, or all invalid (null)
+  //
   // App must already be authorised (see safeAuthorise())
-  _getMdHandle: function (appHandle) {
-    self = this
+  //
+  // Stores SAFE API Handles:
+  //  _appHandle, _mdRoot (also returned), and _nfsRoot
+  //
+  // Returns a Promise which resolves to the mdHandle of the public container,
+  // or null.
+  _getAndSafeHandles: function (appHandle) {
+    let self = this
 
     let result = new Promise((resolve,reject) => {
       if (self._mdRoot && self._nfsRoot){
@@ -598,9 +634,11 @@ SafenetworkLDP.prototype = {
              self._mdRoot = mdHandle
              return window.safeMutableData.emulateAs(self._mdRoot, 'NFS')
                .then((nfsHandle) => {
+                 self._appHandle = appHandle
                  self._nfsRoot = nfsHandle
-                 safeRsLog('_getMdHandle() mdRoot:  ' + self._mdRoot)
-                 safeRsLog('_getMdHandle() nfsRoot: ' + self._nfsRoot)
+                 safeRsLog('_getAndSafeHandles() appHandle:  ' + self._appHandle)
+                 safeRsLog('_getAndSafeHandles() mdRoot:  ' + self._mdRoot)
+                 safeRsLog('_getAndSafeHandles() nfsRoot: ' + self._nfsRoot)
                  resolve(self._mdRoot) // Return mdRoot only if also have nfsHandle
                }, (err) => { // mrhTODO how to handle in UI?
                  safeRsLog('SafeNetwork failed to access container')
@@ -625,18 +663,18 @@ SafenetworkLDP.prototype = {
 
   // Release all handles from the SAFE API
   freeSafeAPI: function (){
-    // Freeing the appHandle also frees all other handles
-    if (this.appHandle) {
-      window.safeApp.free(this.appHandle);
-      this.appHandle = null;
-      this.mdRoot = null;
-      this.nfsRoot = null;
+    // Freeing the _appHandle also frees all other handles
+    if (this._appHandle) {
+      window.safeApp.free(this._appHandle);
+      this._appHandle = null;
+      this._mdRoot = null;
+      this._nfsRoot = null;
     }
     this._isAuthorised = false;
   },
 
-
-  configure: function (settings) {
+// TODO consider store authUri and other user related settings in browser localStorage?
+  OLD_configure: function (settings) {
     // We only update these when set to a string or to null:
     if (typeof settings.userAddress !== 'undefined') { this.userAddress = settings.userAddress; }
     if (typeof settings.appHandle !== 'undefined') { this.appHandle = settings.appHandle; }
@@ -759,6 +797,7 @@ SafenetworkLDP.prototype = {
     }
   },
 
+// TODO switch this to use _connected?
   reflectNetworkStatus: function (isOnline){
     if (this.online != isOnline) {
       this.online = isOnline;
@@ -787,7 +826,7 @@ SafenetworkLDP.prototype = {
           .then(_ => {
             safeRsLog('SAFEApp was authorised & a session was created with the SafeNetwork');
 
-            self._getMdHandle(appHandle)
+            self._getAndSafeHandles(appHandle)
             .then((mdHandle) => {
               if (mdHandle){
                 self.configure({
@@ -828,12 +867,12 @@ SafenetworkLDP.prototype = {
   },
 
   // For reference see WireClient#get (wireclient.js)
-  get: function (path, options) {
-    result = this._get(path, options);
+  RS_get: function (path, options) {
+    result = this.get(path, options);
     return this._wrapBusyDone.call(this, result, "get", path);
   },
 
-  _get: function (path, options) {
+  get: function (path, options) {
     safeRsLog('SafeNetwork.get(' + path + ',...)' );
     var fullPath = ( PATH_PREFIX + '/' + path ).replace(/\/+/g, '/');
 
@@ -854,9 +893,9 @@ SafenetworkLDP.prototype = {
   //
   // mrhTODO bug: contentType is not saved (or updated)
 
-  put: function (path, body, contentType, options) {        return this._wrapBusyDone.call(this, this._put(path, body, contentType, options), "put", path); },
+  RS_put: function (path, body, contentType, options) {        return this._wrapBusyDone.call(this, this.put(path, body, contentType, options), "put", path); },
 
-  _put: function (path, body, contentType, options) {
+  put: function (path, body, contentType, options) {
     safeRsLog('SafeNetwork.put(' + path + ', ' + (options ? ( '{IfMatch: ' + options.IfMatch + ', IfNoneMatch: ' + options.IfNoneMatch + '})') : 'null)' ) );
     var fullPath = ( PATH_PREFIX + '/' + path ).replace(/\/+/g, '/');
 
@@ -900,11 +939,11 @@ SafenetworkLDP.prototype = {
     });
   },
 
-  delete: function (path, options) {
-    return this._wrapBusyDone.call(this, this._delete(path, options), "delete", path);
+  RS_delete: function (path, options) {
+    return this._wrapBusyDone.call(this, this.delete(path, options), "delete", path);
   },
 
-  _delete: function (path, options) {
+  delete: function (path, options) {
     safeRsLog('SafeNetwork.delete(' + path + ',...)' );
     var fullPath = ( PATH_PREFIX + '/' + path ).replace(/\/+/g, '/');
 
@@ -964,9 +1003,9 @@ SafenetworkLDP.prototype = {
    *
    * A promise to the user's account info
    */
-  info: function () {        return this._wrapBusyDone.call(this, this._info(), "get", ''); },
+  RS_info: function () {        return this._wrapBusyDone.call(this, this.info(), "get", ''); },
 
-  _info: function () {
+  info: function () {
     // Not implemented on SAFE, so provdie a default
     return Promise.resolve({accountName: 'SafeNetwork'});
   },
@@ -1415,7 +1454,6 @@ exports = module.exports =  SafenetworkLDP.bind(Safenetwork);
 module.exports.Configure =  SafenetworkLDP.prototype.Configure.bind(Safenetwork);
 module.exports.Enable =     SafenetworkLDP.prototype.Enable.bind(Safenetwork);
 module.exports.isEnabled =  SafenetworkLDP.prototype.isEnabled.bind(Safenetwork);
-module.exports.Configure = SafenetworkLDP.prototype.Configure.bind(Safenetwork);
 
 // map protocols to fetch()
 const fetch = protoFetch({
