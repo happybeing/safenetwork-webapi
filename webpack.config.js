@@ -2,7 +2,8 @@ const path = require('path');
 //var CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
-  entry: './src/safenetwork-solid.js',
+//  entry: './src/safenetwork-solid.js',
+  entry: './src/index.js',
 /*
   entry: {
     app: [

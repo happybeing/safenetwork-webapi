@@ -32,6 +32,17 @@ localStorage.debug = 'safe:*' // breaks node-solid-server (comment out and 'npm 
 const safeLog = require('debug')('safe:solid')  // Coded for Solid
 const safeRsLog = require('debug')('safe:rs')   // Coded for RS.js
 
+// TODO Until SAFE Web API is in a separate module, just 'require' it
+const safeWeb = require('./safenetwork-webapi')
+const safeUtils = require('./safenetwork-utils')
+
+const isFolder = safeUtils.isFolder
+const docpart = safeUtils.docpart
+const pathpart = safeUtils.pathpart
+const hostpart = safeUtils.hostpart
+const protocol = safeUtils.protocol
+const parentPath = safeUtils.parentPath
+
 // safenetwork-solid.js - Safenetwork RS.js backend, tweaked for SOLID LDP prototype
 // TODO refactor as Safenetwork service handler for safe://solid.<public_name>
 // TODO implement LDP: check get/put/delete
@@ -110,9 +121,9 @@ const safeRsLog = require('debug')('safe:rs')   // Coded for RS.js
 // Debug settings
 const ENABLE_ETAGS = true;   // false disables ifMatch / ifNoneMatch checks
 
-// SAFE Network settings
-const SN_SERVICE_LDP = 'ldp'  // SAFE Network service name (Linked Data Protocol)
-const SN_TYPE_TAG_LDP = 80655 // TimBL's b.d.
+// SAFE Network settings TODO delete these (now in SAFE Web API)
+//const SN_SERVICE_LDP = 'ldp'  // SAFE Network service name (Linked Data Protocol)
+//const SN_TYPE_TAG_LDP = 80655 // TimBL's b.d.
 
 // Project Solid settings
 const SETTINGS_KEY = 'solid:safenetwork';
@@ -126,51 +137,6 @@ const httpFetch = require('isomorphic-fetch')
 const protoFetch = require('proto-fetch')
 
 var hasLocalStorage;
-
-// Local helpers
-const isFolder = function (path) {
-  return path.substr(-1) === '/';
-}
-
-// Strip fragment for URI (removes everything from first '#')
-const docpart = function (uri) {
-  var i
-  i = uri.indexOf('#')
-  if (i < 0) {
-    return uri
-  } else {
-    return uri.slice(0, i)
-  }
-}
-
-// Return full document path from root (strips host and fragment)
-const pathpart = function (uri) {
-  let prePath = hostpart(uri)
-  return docpart(uri.slice( prePath.length ))
-}
-
-const hostpart = function (u) {
-  var m = /[^\/]*\/\/([^\/]*)\//.exec(u)
-  if (m) {
-    return m[1]
-  } else {
-    return ''
-  }
-}
-
-const  protocol = function (uri) {
-  var i
-  i = uri.indexOf(':')
-  if (i < 0) {
-    return null
-  } else {
-    return uri.slice(0, i)
-  }
-}
-
-const parentPath = function (path) {
-  return path.replace(/[^\/]+\/?$/, '');
-}
 
 // Used to cache file info
 const Cache = function (maxAge) {
@@ -257,7 +223,8 @@ const appCfg = {
 // Default SAFE Auth permissions to request. Optional parameter to Configure()
 const defaultPerms = {
   // TODO is this right for solid service container (ie solid.<safepublicid>)
-  _public: ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
+  _public:      ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
+  _publicNames: ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
 }
 
 // Safe API object, used by rdflib.js to access the API
@@ -350,6 +317,10 @@ SafenetworkLDP.prototype = {
     var self = this;
     self.freeSafeAPI();
 
+    // TODO probably best to have initialise called once at start so can
+    // TODO access the API with or without authorisation. So: remove the
+    // TODO initialise call to a separate point and only call it once on
+    // TODO load. Need to change freeSafeAPI() or not call it above.
     let result = new Promise((resolve,reject) => {
       return window.safeApp.initialise(self._safeAppConfig, (newState) => {
           // Callback for network state changes
@@ -357,6 +328,8 @@ SafenetworkLDP.prototype = {
           self._connected = newState
         }).then((appHandle) => {
           safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
+          safeWeb.setSafeApi(appHandle)
+          //safeWeb.testsNoAuth();  // TODO remove (for test only)
 
           return window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
           .then((authUri) => {
@@ -367,7 +340,7 @@ SafenetworkLDP.prototype = {
 
               // TODO remove refreshContainersPermissions() step - was introduced while tracing a bug!
               return window.safeApp.refreshContainersPermissions(appHandle).then(_ => {
-                return self._getAndSafeHandles(appHandle).then((mdHandle) => {
+                return self._getSafeHandles(appHandle).then((mdHandle) => {
                   if (mdHandle){
                     // TODO consider store authUri and other user related settings in browser localStorage?
                     /* self.configure({
@@ -378,6 +351,7 @@ SafenetworkLDP.prototype = {
                     });*/
                     safeLog('SAFEApp authorised and configured');
                     self._isAuthorised = true;
+                    safeWeb.testsAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
                     resolve(true)
                   }
                 }, function (err){
@@ -617,7 +591,7 @@ SafenetworkLDP.prototype = {
   //
   // Returns a Promise which resolves to the mdHandle of the public container,
   // or null.
-  _getAndSafeHandles: function (appHandle) {
+  _getSafeHandles: function (appHandle) {
     let self = this
 
     let result = new Promise((resolve,reject) => {
@@ -636,9 +610,9 @@ SafenetworkLDP.prototype = {
                .then((nfsHandle) => {
                  self._appHandle = appHandle
                  self._nfsRoot = nfsHandle
-                 safeRsLog('_getAndSafeHandles() appHandle:  ' + self._appHandle)
-                 safeRsLog('_getAndSafeHandles() mdRoot:  ' + self._mdRoot)
-                 safeRsLog('_getAndSafeHandles() nfsRoot: ' + self._nfsRoot)
+                 safeRsLog('_getSafeHandles() appHandle:  ' + self._appHandle)
+                 safeRsLog('_getSafeHandles() mdRoot:  ' + self._mdRoot)
+                 safeRsLog('_getSafeHandles() nfsRoot: ' + self._nfsRoot)
                  resolve(self._mdRoot) // Return mdRoot only if also have nfsHandle
                }, (err) => { // mrhTODO how to handle in UI?
                  safeRsLog('SafeNetwork failed to access container')
@@ -826,7 +800,7 @@ SafenetworkLDP.prototype = {
           .then(_ => {
             safeRsLog('SAFEApp was authorised & a session was created with the SafeNetwork');
 
-            self._getAndSafeHandles(appHandle)
+            self._getSafeHandles(appHandle)
             .then((mdHandle) => {
               if (mdHandle){
                 self.configure({
@@ -1450,7 +1424,6 @@ let Safenetwork = new SafenetworkLDP;
 // TODO maybe expose SafenetworkLDP get, put, delete?
 
 exports = module.exports =  SafenetworkLDP.bind(Safenetwork);
-//module.exports.Safenetwork = Safenetwork; // TODO remove this???
 module.exports.Configure =  SafenetworkLDP.prototype.Configure.bind(Safenetwork);
 module.exports.Enable =     SafenetworkLDP.prototype.Enable.bind(Safenetwork);
 module.exports.isEnabled =  SafenetworkLDP.prototype.isEnabled.bind(Safenetwork);
