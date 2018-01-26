@@ -311,7 +311,7 @@ SafenetworkLDP.prototype = {
  * @returns Promise which resolves true on successful authorisation, false if not
  */
 
-  safenetworkAuthorise: function (){
+  async safenetworkAuthorise(){
     safeLog('safenetworkAuthorise()...');
 
     var self = this;
@@ -321,67 +321,43 @@ SafenetworkLDP.prototype = {
     // TODO access the API with or without authorisation. So: remove the
     // TODO initialise call to a separate point and only call it once on
     // TODO load. Need to change freeSafeAPI() or not call it above.
-    let result = new Promise((resolve,reject) => {
-      return window.safeApp.initialise(self._safeAppConfig, (newState) => {
+    try {
+      let appHandle = await window.safeApp.initialise(self._safeAppConfig, (newState) => {
           // Callback for network state changes
           safeLog('SafeNetwork state changed to: ', newState)
           self._connected = newState
-        }).then((appHandle) => {
-          safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
-          safeWeb.setSafeApi(appHandle)
-          //safeWeb.testsNoAuth();  // TODO remove (for test only)
+        })
 
-          return window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
-          .then((authUri) => {
-            safeLog('SAFEApp was authorised and authUri received: ', authUri);
-            return window.safeApp.connectAuthorised(appHandle, authUri)
-            .then(_ => {
-              safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
+        safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
+        safeWeb.setSafeApi(appHandle)
+        //safeWeb.testsNoAuth();  // TODO remove (for test only)
 
-              // TODO remove refreshContainersPermissions() step - was introduced while tracing a bug!
-              return window.safeApp.refreshContainersPermissions(appHandle).then(_ => {
-                return self._getSafeHandles(appHandle).then((mdHandle) => {
-                  if (mdHandle){
-                    // TODO consider store authUri and other user related settings in browser localStorage?
-                    /* self.configure({
-                      appHandle: _appHandle,   // safeApp.initialise() return (appHandle)
-                      authURI: authUri,       // safeApp.authorise() return (authUri)
-                      permissions: self._safeAppPermissions, // Permissions used to request authorisation
-                      options: self._safeAppConfig.options, // Options used to request authorisation
-                    });*/
-                    safeLog('SAFEApp authorised and configured');
-                    self._isAuthorised = true;
-                    safeWeb.testsAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
-                    resolve(true)
-                  }
-                }, function (err){
-                  self.reflectNetworkStatus(false);
-                  safeLog('SAFEApp SafeNetwork getMdHandle() failed: ' + err);
-                  self.freeSafeAPI();
-                  reject(false)
-                });
-              });
-            }, function (err){
-              self.reflectNetworkStatus(false);
-              safeLog('SAFEApp SafeNetwork Connect Failed: ' + err);
-              self.freeSafeAPI();
-              reject(false)
-            });
-          }, function (err){
-            self.reflectNetworkStatus(false);
-            safeLog('SAFEApp SafeNetwork Authorisation Failed: ' + err);
-            self.freeSafeAPI();
-            reject(false)
-          });
-        }, function (err){
-          self.reflectNetworkStatus(false);
-          safeLog('SAFEApp SafeNetwork Initialise Failed: ' + err);
-          self.freeSafeAPI();
-          reject(false)
-        });
-      });
+        let authUri = await window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
+        safeLog('SAFEApp was authorised and authUri received: ', authUri);
 
-      return result;
+        await window.safeApp.connectAuthorised(appHandle, authUri)
+        safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
+
+        let mdHandle = await self._getSafeHandles(appHandle)
+        if (mdHandle){
+          // TODO consider store authUri and other user related settings in browser localStorage?
+          /* self.configure({
+            appHandle: _appHandle,   // safeApp.initialise() return (appHandle)
+            authURI: authUri,       // safeApp.authorise() return (authUri)
+            permissions: self._safeAppPermissions, // Permissions used to request authorisation
+            options: self._safeAppConfig.options, // Options used to request authorisation
+          });*/
+          safeLog('SAFEApp authorised and configured');
+          self._isAuthorised = true;
+          safeWeb.testsAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
+          return true
+        }
+      } catch (err){
+        safeLog('%s() FAILED: ', err)
+        self.freeSafeAPI();
+      }
+
+      return false;
   },
 
 /*
