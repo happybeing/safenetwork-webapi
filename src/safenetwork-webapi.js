@@ -65,20 +65,19 @@ class SafeWeb {
 
   // Get the key/value of an entry from a mutable data object
   //
+  // This is trivial, but provided to match setMutableDataValue()
+  //
   // @param mdHandle handle of a mutable data, with permission to 'Read'
   //
   // @returns a Promise which resolves to a ValueVersion
   async getMutableDataValue(mdHandle,key){
-  safeLog('getMutableDataValues(%s,%s)...',mdHandle,key)
-  try {
-    let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
-    let entryKey = this.makePublicNamesEntryKey(key)
-    return await window.safeMutableDataEntries.get(entriesHandle, entryKey)
-  } catch(err){
-    safeLog("getMutableDataValues() WARNING no entry found for key '%s'", key)
-  }
-
-  return null
+    safeLog('getMutableDataValue(%s,%s)...',mdHandle,key)
+    try {
+      return await window.safeMutableData.get(mdHandle,key)
+    } catch(err){
+      safeLog("getMutableDataValue() WARNING no entry found for key '%s'", key)
+      throw err
+    }
   }
 
   // Set (ie insert or update) an entry in a mutable data object
@@ -117,7 +116,8 @@ class SafeWeb {
       safeLog('Mutable Data Entry %s',(mustNotExist ? 'inserted' : 'updated'));
       return true
     } catch (err) {
-      safeLog('ERROR: unable to set mutable data value: ',err)
+      safeLog('WARNING - unable to set mutable data value: ',err)
+      throw err
     }
 
     return false
@@ -254,6 +254,19 @@ class SafeWeb {
   async createPublicContainer(rootContainer,publicName,containerName,mdTagType){
     safeLog('createPublicContainer(%s,%s,%s,%s)...',rootContainer,publicName,containerName,mdTagType)
     try {
+      // Check the container does not yet exist
+      let rootMd = await window.safeApp.getContainer(this.appHandle(),rootContainer)
+      let rootKey = '/'+rootContainer+'/'+publicName+'/'+containerName
+
+      // Check the public container doesn't already exist
+      let existingValue = null
+      try {
+        existingValue = await this.getMutableDataValue(rootMd,rootKey)
+      } catch (err){
+      } // Ok, key doesn't exist yet
+      if (existingValue)
+        throw new Error("root container '"+rootContainer+"' already has entry with key: '"+rootKey+"'")
+
       // Create the new container
       let mdHandle = await window.safeMutableData.newRandomPublic(this.appHandle(),mdTagType)
       let entriesHandle = await window.safeMutableData.newEntries(this.appHandle())
@@ -267,13 +280,11 @@ class SafeWeb {
       let nameAndTag = await window.safeMutableData.getNameAndTag(mdHandle)
 
       // Create an entry in rootContainer (fails if key exists for this container)
-      let rootMd = await window.safeApp.getContainer(this.appHandle(),rootContainer)
-      let rootKey = '/'+rootContainer+'/'+publicName+'/'+containerName
       await this.setMutableDataValue(rootMd,rootKey,nameAndTag.name.buffer)
       window.safeMutableData.free(mdHandle)
       return nameAndTag
     } catch (err){
-      safeLog('createPublicContainer() failed: ', err)
+      safeLog('unable to create public container: ', err)
       throw err
     }
   }
@@ -431,8 +442,8 @@ class SafeWeb {
   // You should free() the returned handle with window.safeMutableData.free
   async getServicesMdFor(host){
     safeLog('getServicesMdFor(%s)',host)
+    let publicName = host.split('.')[1]
     try {
-      let publicName = host.split('.')[1]
       if (publicName == undefined)
         publicName = host
 
@@ -446,7 +457,7 @@ class SafeWeb {
       }
       throw new Error("services Mutable Data not found for public name '" + publicName + "'")
     } catch (err) {
-      safeLog('Look up FAILED for MD XOR name: ' + this.makeServicesMdName(publicName))
+      safeLog('Look up FAILED for MD XOR name: ' + await this.makeServicesMdName(publicName))
       safeLog('getServicesMdFor ERROR: ', err)
       throw err
     }
@@ -723,8 +734,11 @@ class SafeWeb {
       await this.listContainer('_public')
       await this.listContainer('_publicNames')
 
-      this.test_createPublicNameAndSetupService('testname11','test','ldp')
-      //this.test_setupServiceOnHost('testhost','ldp')
+      // Change public name / host for each run (e.g. testname1 -> testname2)
+//      this.test_createPublicNameAndSetupService('testname11','test','ldp')
+
+      // This requires that the public name of the given host already exists:
+//      this.test_setupServiceOnHost('testname10','ldp')
     } catch (err) {
       safeLog('Error: ', err)
     }
@@ -1075,12 +1089,14 @@ class SafeServiceLDP extends ServiceInterface {
     let serviceValue = ''   // Default is do nothing
     let setup = this.getServiceConfig().setupDefaults
     if (setup.setupNfsContainer){
-
       let nameAndTag = await this.safeWeb().createPublicContainer(
         setup.defaultRootContainer,publicName,setup.defaultContainerName,this.getTagType())
 
       serviceValue = nameAndTag.name.buffer
       await this.safeWeb().setMutableDataValue(servicesMd,serviceKey,serviceValue)
+      // TODO remove this excess DEBUG:
+      safeLog('Pubic name \'%s\' services:',publicName)
+      await this.safeWeb().listMd(servicesMd)
     }
     return serviceValue
   }
