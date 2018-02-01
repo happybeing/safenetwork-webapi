@@ -6,6 +6,7 @@
  *
  */
 
+// TODO see TODO inside testsAuth below
 // TODO migrate and refactor LDP implementation here, from safenetwork-solid.js
 // TODO maybe provide methods to enumerate public names & services
 // TODO refactor to eliminate memory leaks (e.g. using 'finally')
@@ -43,7 +44,7 @@ class SafeWeb {
   }
 
   initialise() {
-    this._hostedServices = new Map     // Map of host (profile.public-name) to a service instance
+    this._activeServices = new Map     // Map of host (profile.public-name) to a service instance
     // TODO if necessary, update/reset managed objects such as MDs
   }
 
@@ -62,23 +63,23 @@ class SafeWeb {
    * --------------------------
    */
 
-   // Get the key/value of an entry from a mutable data object
-   //
-   // @param mdHandle handle of a mutable data, with permission to 'Read'
-   //
-   // @returns a Promise which resolves to a ValueVersion
-   async getMutableDataValue(mdHandle,key){
-    safeLog('%s(%s,%s)...', Function.name,mdHandle,key)
-    try {
-      let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
-      let entryKey = this.makePublicNamesEntryKey(key)
-      return await window.safeMutableDataEntries.get(entriesHandle, entryKey)
-    } catch(err){
-      safeLog("%s() WARNING no entry found for key '%s'", Function.name, key)
-    }
+  // Get the key/value of an entry from a mutable data object
+  //
+  // @param mdHandle handle of a mutable data, with permission to 'Read'
+  //
+  // @returns a Promise which resolves to a ValueVersion
+  async getMutableDataValue(mdHandle,key){
+  safeLog('getMutableDataValues(%s,%s)...',mdHandle,key)
+  try {
+    let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
+    let entryKey = this.makePublicNamesEntryKey(key)
+    return await window.safeMutableDataEntries.get(entriesHandle, entryKey)
+  } catch(err){
+    safeLog("getMutableDataValues() WARNING no entry found for key '%s'", key)
+  }
 
-    return null
-   }
+  return null
+  }
 
   // Set (ie insert or update) an entry in a mutable data object
   //
@@ -95,26 +96,28 @@ class SafeWeb {
     if (mustNotExist == undefined)
       mustNotExist = true
 
-    safeLog('%s(%s,%s,%s,%s)...',Function.name,mdHandle,key,value,mustNotExist)
+    safeLog('setMutableDataValue(%s,%s,%s,%s)...',mdHandle,key,value,mustNotExist)
+    let entry = null
     try {
       // Check for an existing entry (before creating services MD)
-      let value = await window.safeMutableData.get(mdHandle,key)
+      try {
+      entry = await window.safeMutableData.get(mdHandle,key)
+    } catch (err) {}
 
-      if (value && mustNotExist)
-        throw new Error("Key '%s' already exists", key)
+      if (entry && mustNotExist)
+        throw new Error("Key '" + key + "' already exists")
 
       let mutationHandle = await window.safeMutableData.newMutation(this.appHandle())
       if (entry)
-        await window.safeMutableDataMutation.update(mutationHandle,key,servicesMdName,value.version+1)
+        await window.safeMutableDataMutation.update(mutationHandle,key,mdHandle,value.version+1)
       else
-        await window.safeMutableDataMutation.insert(mutationHandle,key,servicesMdName)
+        await window.safeMutableDataMutation.insert(mutationHandle,key,mdHandle)
 
-      await window.safeMutableData.applyEntriesMutation(mdHandle, mutationHandle).then(_ => {
-        safeLog('Mutable Data Entry %s:',(mustExist ? 'updated' : 'inserted'));
-        return true
-      });
+      await window.safeMutableData.applyEntriesMutation(mdHandle, mutationHandle)
+      safeLog('Mutable Data Entry %s',(mustNotExist ? 'inserted' : 'updated'));
+      return true
     } catch (err) {
-      safeLog('%s() failed: ',Function.name,err)
+      safeLog('ERROR: unable to set mutable data value: ',err)
     }
 
     return false
@@ -156,7 +159,61 @@ class SafeWeb {
    return null
   }
 
+  // Create/reserve a new public name and set it up with a hosted service
+  //
+  // See also createPublicName()
+  //
+  // User must be logged in
+  // User must authorise the app to 'Read' and 'Insert' _publicNames on this account
+  //
+  // Fails if it finds there is already a _publicNames entry, otherwise it
+  // creates a new services MD for the public name, and inserts it, and sets
+  // up the service on the MD.
+  //
+  // Fails if the requested service is not available.
+  //
+  // Fails if it can't create the services MD because it already exists, which implies that
+  // the public name is already taken. You could pre-check for this using getServicesMdFor().
+  //
+  // @param publicName
+  // @param hostProfile a prefix which identifyies the host for the service where host=[profile.]public-name
+  // @param serviceId   the string form of service identity (e.g. 'www', 'ldp' etc.)
+  //
+  // @returns a Promise which resolves to an object containing the _public entry's key, value and handle:
+  //  - key:          of the format: '_publicNames/<public-name>'
+  //  - value:        the XOR name of the services MD of the new public name
+  //  - serviceValue: the value of the services MD entry for this host (ie [profile.]public-name)
+  async createPublicNameAndSetupService(publicName,hostProfile,serviceId){
+    safeLog('createPublicNameAndSetupService(%s,%s,%s)...', publicName,hostProfile,serviceId)
+    let createResult = undefined
+
+    try {
+      let service = this._availableServices.get(serviceId)
+      if (!service){
+        throw new Error('requested service \''+serviceId+'\' is not available')
+      }
+
+      createResult = await _createPublicName(publicName)
+      let servicesMd = createResult.servicesMd
+      delete createResult.servicesMd
+
+      let host = publicName
+      if (hostProfile != undefined && hostProfile != '')
+        host = hostProfile+'.'+hostPublicName
+
+      createResult.serviceValue = await service.setupServiceForHost(host,createResult.servicesMd)
+      window.safeMutableData.free(servicesMd)
+    } catch (err){
+      err = new Error('ERROR failed to create public name with service: ' + err)
+      throw err
+    }
+
+    return createResult
+  }
+
   // Create/reserve a new public name
+  //
+  // See also createPublicNameWithService()
   //
   // This includes creating a new services MD and inserting it into the _publicNames container
   //
@@ -172,11 +229,97 @@ class SafeWeb {
   // @param publicName
   //
   // @returns a Promise which resolves to an object containing the new entry's key, value and handle:
-  //  - key:      of the format: '_publicNames/<public-name>'
-  //  - value:    the XOR name of the services entry MD for the public name
-  //  - mdHandle: the handle of the newly created services MD
+  //  - key:        of the format: '_publicNames/<public-name>'
+  //  - value:      the XOR name of the services entry MD for the public name
   async createPublicName(publicName){
     safeLog('createPublicName(%s)...', publicName)
+    try {
+      let createResult = await this._createPublicName(publicName)
+      let servicesMd = await createResult.servicesMd
+      delete createResult.servicesMd
+      window.safeMutableData.free(servicesMd)
+    } catch (err) {
+     safeLog('Unable to create public name \''+publicName+'\': ', err)
+     throw err
+    }
+  }
+
+  // Create a new random public container for
+  //
+  // @param rootContainer a top level public container (e.g. '_public', '_documents' etc)
+  // @param publicName    the public name which owns the container
+  // @param containerName an arbitrary name which may be specified by the user, such as 'root-photos'
+  // @param mdTagType     Mutable Data tag_type (typically, this will be the service tag_type)
+  //
+  // @returns   Promise<NameAndTag>: the name and tag values
+  async createPublicContainer(rootContainer,publicName,containerName,mdTagType){
+    safeLog('createPublicContainer(%s,%s,%s,%s)...',rootContainer,publicName,containerName,mdTagType)
+    try {
+      let mdHandle = await window.safeMutableData.newRandomPublic(this.appHandle(),mdTagType)
+
+      let entriesHandle = await window.safeMutableData.newEntries(this.appHandle())
+      // TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
+      await window.safeMutableDataEntries.insert(entriesHandle, 'key1', 'value1')
+
+      // TODO review this with Web Hosting Manager (where it creates a new root-www container)
+      // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
+      let pmSet = ['Read','Update','Insert','Delete','ManagePermissions'];
+      let pubKey = await window.safeCrypto.getAppPubSignKey(this.appHandle())
+      let pmHandle = await window.safeMutableData.newPermissions(this.appHandle())
+      await window.safeMutableDataPermissions.insertPermissionsSet(pmHandle, pubKey, pmSet)
+      await window.safeMutableData.put(mdHandle, pmHandle,entriesHandle)
+      let nameAndTag = await window.safeMutableData.getNameAndTag(mdHandle)
+      window.safeMutableData.free(mdHandle)
+      return nameAndTag
+    } catch (err){
+      safeLog('createPublicContainer() failed: ', err)
+      throw err
+    }
+  }
+
+  // Set up a service on a host / public name
+  //
+  // See also createPublicName()
+  //
+  // User must be logged in and grant permissions (TODO - what precisley?)
+  //
+  // Fails if the requested service is not available.
+  //
+  // @param host (i.e. [profile.]public-name)
+  // @param serviceId   the string form of service identity (e.g. 'www', 'ldp' etc.)
+  //
+  // @returns   the value of the services MD entry for this host (ie [profile.]public-name)
+  async setupServiceOnHost(host,serviceId){
+    safeLog('setupServiceServiceOnHost(%s,%s)...', host,serviceId)
+    let serviceValue = undefined
+
+    try {
+      let service = this._availableServices.get(serviceId)
+      if (!service){
+        throw new Error('requested service \''+serviceId+'\' is not available')
+      }
+
+      let servicesMd = await this.getServicesMdFor(host)
+      serviceValue = await service.setupServiceForHost(host,servicesMd)
+      window.safeMutableData.free(servicesMd)
+    } catch (err){
+      err = new Error('ERROR unable to set up service \''+serviceId+'\': ' + err)
+      throw err
+    }
+
+    return serviceValue
+  }
+
+  // Internal version returns a handle which must be freed by the caller
+  //
+  // @param publicName
+  //
+  // @returns a Promise which resolves to an object containing the new entry's key, value and handle:
+  //  - key:        of the format: '_publicNames/<public-name>'
+  //  - value:      the XOR name of the services entry MD for the public name
+  //  - servicesMd: the handle of the newly created services MD
+  async _createPublicName(publicName){
+    safeLog('_createPublicName(%s)...', publicName)
     try {
       // Check for an existing entry (before creating services MD)
       let entry = null
@@ -185,51 +328,118 @@ class SafeWeb {
       } catch (err) {} // No existing entry, so ok...
 
       if (entry)
-        throw new Error('Can\'t create _publicNames entry, already exists for %s', publicName)
+        throw new Error('Can\'t create _publicNames entry, already exists for \`'+publicName+"'")
 
+ // TODO move servicesMd commit to after, successful mutation of the _publicNames entry
       // Create a new services MD (fails if the publicName is taken)
       let servicesMdName = await this.makeServicesMdName(publicName)
-      let servicesMd = await window.safeMutableData.newPublic(this.appHandle(), servicesMdName, SN_TAGTYPE_SERVICES)
+      let servicesMd = await window.safeMutableData.newPublic(this.appHandle(),servicesMdName,SN_TAGTYPE_SERVICES)
+
+/*      let servicesMutation = await window.safeMutableData.newMutation(this.appHandle())
+      await window.safeMutableDataMutation.insert(servicesMutation, 'key1', 'value1')
+      await window.safeMutableData.applyEntriesMutation(servicesMd, servicesMutation)
+*/
+      let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
+      // TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
+      await window.safeMutableDataEntries.insert(servicesEntriesHandle, 'key1', 'value1')
+//TODO NEXT...
+      // TODO review this with Web Hosting Manager (separate into a make or init servicesMd function)
+      // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
+      let pmSet = ['Read','Update','Insert','Delete','ManagePermissions'];
+      let pubKey = await window.safeCrypto.getAppPubSignKey(this.appHandle())
+      let pmHandle = await window.safeMutableData.newPermissions(this.appHandle())
+      await window.safeMutableDataPermissions.insertPermissionsSet(pmHandle, pubKey, pmSet)
+      await window.safeMutableData.put(servicesMd, pmHandle, servicesEntriesHandle)
+
+      // TODO do I also need to set metadata?
+      // TODO - see: 	http://docs.maidsafe.net/beaker-plugin-safe-app/#windowsafemutabledatasetmetadata
+      // TODO free stuff!
+      // TODO   - pubKey? - ask why no free() functions for cyrpto library handles)
+      // TODO   - servicesEntriesHandle (window.safeMutableData.newEntries doesn't say it should be freed)
+      await window.safeMutableDataPermissions.free(pmHandle)
+//      await window.safeMutableDataMutation.free(servicesMutation)
 
       // TODO remove (test only):
-      await window.safeMutableData.getNameAndTag(servicesMd)
-      .then((r) => safeLog('New Public servicesMd created with tag: ', r.tag, ' and name: ', r.name.buffer));
+      let r = await window.safeMutableData.getNameAndTag(servicesMd)
+      safeLog('New Public servicesMd created with tag: ', r.type_tag, ' and name: ', r.name);
 
       let publicNamesMd = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
       let entryKey = this.makePublicNamesEntryKey(publicName)
       let entriesHandle = await window.safeMutableData.getEntries(publicNamesMd)
-      let mutationHandle = await window.safeMutableDataEntries.mutate(entriesHandle)
-      await window.safeMutableDataMutation.insert(mutationHandle,entryKey,servicesMdName)
-      return window.safeMutableData.applyEntriesMutation(publicNamesMd, mutationHandle).then(async _ => {
-        safeLog('New _publicNames entry created for %s', publicName);
-        return {
-            key:            entryKey,
-            value:          servicesMdName,
-            servicesHandle: servicesMd,
-          }
-      });
+      let namesMutation = await window.safeMutableDataEntries.mutate(entriesHandle)
+      await window.safeMutableDataMutation.insert(namesMutation,entryKey,servicesMdName)
+      await window.safeMutableData.applyEntriesMutation(publicNamesMd, namesMutation)
+      await window.safeMutableDataMutation.free(namesMutation)
+
+      // We've stored servicesMd in the _publicNames container, so commit servicesMd to the network
+/*      let servicesMutation = await window.safeMutableData.newMutation(this.appHandle())
+      await window.safeMutableDataMutation.insert(servicesMutation, 'key1', 'value1')
+      await window.safeMutableData.applyEntriesMutation(servicesMd, servicesMutation)
+      await window.safeMutableDataMutation.free(servicesMutation)
+*/      // TODO remove (test only):
+      r = await window.safeMutableData.getNameAndTag(servicesMd)
+      safeLog('New Public servicesMd created with tag: ', r.type_tag, ' and name: ', r.name);
+
+      safeLog('New _publicNames entry created for %s', publicName);
+      return {
+        key:        entryKey,
+        value:      servicesMdName,
+        'servicesMd': servicesMd,
+      }
     } catch (err) {
-     safeLog('createPublicNameEntry() failed: ', err)
+     safeLog('_createPublicNameEntry() failed: ', err)
      throw err
     }
   }
 
-  // Get the services MD for any public name, even ones you don't own
+  // Test if a given Mutable Data exists on the network
+  //
+  // Use this on a handle from one the safeApp.MutableData.newPublic()
+  // or newPrivate() APIs. Those don't create a MutableData on the network
+  // but a handle which you can then use to do so. So we use that to test if
+  // it already exists.
+  //
+  // This method is really just to help clarify the SAFE API, so you could
+  // just do what this does in your code.
+  //
+  // @param mdHandle the handle of a Mutable Data object
+  //
+  // @returns a promise which resolves true if the Mutable Data exists
+  async mutableDataExists(mdHandle){
+    try {
+      await window.safeMutableData.getVersion(mdHandle)
+      return true
+    } catch (err) {
+      return false  // Error indicates this MD doens't exist on the network
+    }
+
+    return false
+  }
+
+  // Get the services MD for any public name or host, even ones you don't own
   //
   // This is always public, so no need to be logged in or own the public name.
   //
-  // @param publicName
+  // @param host (or public-name), where host=[profile.]public-name
   //
   // @returns promise which resolves to the services MD of the given name
-  async getServicesMdFor(publicName){
-    safeLog('getServicesMdFor(%s)',publicName)
+  // You should free() the returned handle with window.safeMutableData.free
+  async getServicesMdFor(host){
+    safeLog('getServicesMdFor(%s)',host)
     try {
+      let publicName = host.split('.')[1]
+      if (publicName == undefined)
+        publicName = host
+
+      safeLog("host '%s' has publicName '%s'", host, publicName)
+
       let servicesName = await this.makeServicesMdName(publicName)
-      await window.safeMutableData.newPublic(servicesName,SN_TAGTYPE_SERVICES)
-      .then((mdHandle) => {
+      let mdHandle = await window.safeMutableData.newPublic(this.appHandle(),servicesName,SN_TAGTYPE_SERVICES)
+      if (await this.mutableDataExists(mdHandle)) {
           safeLog('Look up SUCCESS for MD XOR name: ' + servicesName)
           return mdHandle
-      });
+      }
+      throw new Error("services Mutable Data not found for public name '" + publicName + "'")
     } catch (err) {
       safeLog('Look up FAILED for MD XOR name: ' + this.makeServicesMdName(publicName))
       safeLog('getServicesMdFor ERROR: ', err)
@@ -237,40 +447,41 @@ class SafeWeb {
     }
   }
 
-  // Get the services MD for a given public name (which you must own)
+  // Get the services MD for a public name or host (which you must own)
   //
   // User must be logged into the account owning the public name for this to succeed.
   // User must authorise the app to 'Read' _publicNames on this account
   //
-  // @param publicName
+  // @param host (or public-name), where host=[profile.]public-name
   //
   // @returns promise which resolves to the services MD of the given name, or null
-  async getServicesMdFromContainers(publicName){
-   safeLog('getServicesForMy(%s)',publicName)
+  // You should free() the returned handle with window.safeMutableData.free
+  async getServicesMdFromContainers(host){
+   safeLog('getServicesMdFromContainers(%s)',host)
    try {
+     let publicName = host.split('.')[1]
+     if (publicName == undefined)
+       publicName = host
+     safeLog("host '%s' has publicName '%s'", host, publicName)
+
      let nameKey = this.makePublicNamesEntryKey(publicName)
-     window.safeApp.getContainer(this.appHandle(), '_publicNames')
-     .then(async (mdHandle) => {
-       safeLog("_publicNames ----------- start ----------------")
-       await window.safeMutableData.getEntries(mdHandle)
-       .then((entriesHandle) => window.safeMutableDataEntries
-         .forEach(entriesHandle, (k, v) => {
-           safeLog('Key: ', k.toString())
-           safeLog('Value: ', v.buf.toString())
-           safeLog('Version: ', v.version)
-           if ( k == nameKey ){
-             safeLog('Key: ' + nameKey + '- found')
-             return v.buf
-           }
-         }).then(_ => {
-           safeLog('Key: ' + nameKey + '- NOT found')
-           safeLog("%s() - WARNING: No _publicNames entry for '%s'", Function.name, publicName)
-           return null
-         })
-       );
-     });
+     let mdHandle = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
+     safeLog("_publicNames ----------- start ----------------")
+     let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
+     await window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
+       safeLog('Key: ', k.toString())
+       safeLog('Value: ', v.buf.toString())
+       safeLog('Version: ', v.version)
+       if ( k == nameKey ){
+         safeLog('Key: ' + nameKey + '- found')
+         return v.buf
+       }
+     })
+     safeLog('Key: ' + nameKey + '- NOT found')
+     safeLog("getServicesMdFromContainers() - WARNING: No _publicNames entry for '%s'", publicName)
+     return null
    } catch (err) {
-     safeLog('getServicesMdFromContainers ERROR: ', err)
+     safeLog('getServicesMdFromContainers() ERROR: ', err)
      throw err
    }
   }
@@ -301,13 +512,38 @@ class SafeWeb {
     return this._availableServices.get(serviceId)
   }
 
+  // Make service active for a host address
+  //
+  // - replaces an active service instance if present
+  //
+  // @param host
+  // @param a service instance which handles service requests for this host
+  //
+  // @returns a promise which resolves to true
+  async setActiveService(host,serviceInstance){
+    let oldService = await this.getActiveService(host)
+    if (oldService)
+      oldService.freeHandles()
 
-  // Get the service implementation for a URI
+    this._activeServices.set(host, serviceInstance)
+    return true
+  }
+
+  // Get the service instance active for this host address
+  //
+  // @param host
+  //
+  // @returns the ServiceInterface implementation for the service, or null
+  async getActiveService(host){
+    return this._activeServices.get(host)
+  }
+
+  // Get the service enabled for a URI
   //
   // Maintains a cache of handlers for each host, so once a service has
   // been assigned to a host address the service implementation is already known
   // for any URI with that host. If the appropriate service for a host changes,
-  // it would be necessary to clear its cached service by setting _hostedServices.delete(<host>)
+  // it would be necessary to clear its cached service by setting _activeServices.delete(<host>)
   // to null, and the next call would allocate a service from scratch.
   //
   // @param a valid safe:// style URI
@@ -316,47 +552,56 @@ class SafeWeb {
   // @param a valid safe:// style URI
   // @returns a promise which evaluates to a service implementation object, or null if no service installed on host
   async getServiceForUri(uri){
-    safeLog('%s(%s)...', Function.name, uri)
+    safeLog('getServiceForUri(%s)...', uri)
     try {
       let host = hostpart(uri)
-      if (this._hostedServices.get(host) != undefined)
-        return this._hostedServices.get(host) // Already initialised
+      if (this._activeServices.get(host) != undefined)
+        return this._activeServices.get(host) // Already initialised
 
       // Lookup the service on this host: profile.public-name
-//TODO??? make sure it works if no '.'
-let uriProfile = host.split('.')[0]
-let publicName = host.split('.')[1]
+      let uriProfile = host.split('.')[0]
+      let publicName = host.split('.')[1]
+      if (publicName == undefined){
+        publicName = host
+        uriProfile = ''
+      }
       safeLog("URI has profile '%s' and publicName '%s'", uriProfile, publicName)
 
       // Get the services MD for publicName
       let servicesMd = await this.getServicesMdFor(publicName)
       let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
       safeLog("checking servicesMd entries for host '%s'", host)
-      await window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
+      await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
         safeLog('Key: ', k.toString())
         safeLog('Value: ', v.buf.toString())
         safeLog('Version: ', v.version)
-        let serviceProfile = host.split('@')[0]
-        let serviceId = host.split('@')[1]
+        let serviceKey = k.toString()
+        let serviceProfile = key.split('@')[0]
+        let serviceId = key.split('@')[1]
+        if (serviceId == undefined){
+          serviceId = serviceKey
+          serviceProfile = ''
+        }
+
         let serviceValue = v.buf.toString()
         safeLog("checking: serviceProfile '%s' has serviceId '%s'", serviceProfile, serviceId)
         if (serviceProfile == uriProfile){
           let serviceFound = this._availableServices.get(serviceId)
           if (serviceFound){
             // Use the installed service to enable the service on this host
-            let hostedService = serviceFound.cloneService(serviceValue)
-            this._hostedServices.set(host,hostedService)
+            let hostedService = await serviceFound.makeServiceInstance(host,serviceValue)
+            this.setActiveService(host,hostedService) // Cache the instance for subsequent uses
             return hostedService
           }
           else {
-            let errMsg = "WARNING service '" + serviceId + "' enabled for host '" + host + "' is not installed"
+            let errMsg = "WARNING service '" + serviceId + "' is setup on '" + host + "' but no implementation is available"
             throw new Error(errMsg)
           }
         }
-      }).then(_ => {
-        safeLog("WARNING no services enabled for host '" + host + "'")
-        return null
-      });
+      })
+
+      safeLog("WARNING no service setup for host '" + host + "'")
+      return null
     }
     catch (err) {
       safeLog('getServiceForUri(%s) FAILED: %s', uri, err)
@@ -372,7 +617,7 @@ let publicName = host.split('.')[1]
    * --------------
    */
 
-  // Helpter to mutable the data handle for an MD hash
+  // Helper to get a mutable data handle for an MD hash
   //
   // @param hash
   // @param tagType
@@ -424,64 +669,6 @@ let publicName = host.split('.')[1]
    * accessed by clients using fetch() on safe: URIs such as safe://ldp.happybeing/profile/me#card
    */
 
-  // Initialise a service on a given services MD. If necessary creates an entry in the services MD
-  //
-  // @param serviceSettings an object with properties:
-  //  publicName:    publicName on which this service is active
-  //  servicesMd:    MD handle for the services of a public name (ie a _publicNames entry value)
-  //  servicePrefix: string identifier for the service (used as a prefix to a domain)
-  //  serviceTag:    numeric identifier for the service
-  //  serviceKey:    the entry key for this service in servicesMd
-  //  serviceValue:  service specific implementation (e.g. for www, it will identify a container in _public)
-  // @param overwrite     [defaults to false] if the service has an entry that does not match, set this 'true' to overwrite
-  //
-  // @returns a promise which resolves to true if it succeeded in creating or updating to the given settings, false if a suitable entry already exists
-
-  // TODO this belongs in ServiceInterface now (MAYBE???) May need some tweaking (e.g. service would call this with a newly created serviceValue after having checked it doesn't already have a suitable entry, by calling this with 'overwrite:true')
-  async InitialiseServiceEntry(serviceSettings,overwrite){
-    safeLog('InitialiseServiceEntry(%o,%s)...',serviceSettings,overwrite)
-    if (overwrite == undefined){
-      const overwrite = false
-    }
-
-    try {
-      let entriesHandle = await window.safeMutableData.getEntries(serviceSettings.servicesMd)
-      try {
-        await window.safeMutableDataEntries.get(entriesHandle,serviceSettings.serviceKey).then(async (value) => {
-          // An entry exists for servicePrefix
-          if (overwrite){
-            safeLog("Initialise service entry WARNING: service entry exists for key '%s', no action taken", serviceSettings.serviceKey )
-            return false
-          }
-          else {
-            let mutationHandle = await window.safeMutableDataEntries.mutate(entriesHandle)
-            await window.safeMutableDataMutation.update(mutationHandle,serviceSettings.serviceKey,serviceSettings.serviceValue)
-            await window.safeMutableData.applyEntriesMutation(serviceSettings.servicesMd, mutationHandle)
-            .then(async _ => {
-                await window.safeMutableDataMutation.free(mutationHandle)
-                return true
-            });
-          }
-        }),(async _ =>{
-          // No entry exists, so insert one
-          let mutationHandle = await window.safeMutableDataEntries.mutate(entriesHandle)
-          await window.safeMutableDataMutation.insert(mutationHandle,serviceSettings.serviceKey,serviceSettings.serviceValue)
-          await window.safeMutableData.applyEntriesMutation(serviceSettings.servicesMd, mutationHandle)
-          .then(async _ => {
-              await window.safeMutableDataMutation.free(mutationHandle)
-              return true
-          });
-        });
-      } catch (err) {
-        safeLog('InitialiseServiceEntry() WARNING: %s', err)
-        return false
-      }
-    } catch (err) {
-      safeLog('InitialiseServiceEntry() FAILED: ', err)
-      throw err
-    }
-  }
-
   // Helper to create the key for looking up the service installed on a host
   //
   // @param hostProfile prefix of a host address, which is [profile.]public-name
@@ -516,37 +703,71 @@ let publicName = host.split('.')[1]
     safeLog('TEST START create public name')
     await this.listContainer('_publicNames')
 
-    let name = 'testname3'
+    let name = 'testname11'
+    // Entries so far: testname1 broken
+    // testname2 onwards should have valid esrvicesMd (with key1/value1)
+    //
+    await this.listContainer('_publicNames')
+    let newNameResult = await this.createPublicName(name)
+    await this.listContainer('_publicNames')
     let entry = await this.getPublicNameEntry(name);
+    safeLog('_publicNames entry for \'%s\':\n   Key: \'%s\'\n   Value: \'%s\'\n   Version: %s',name,entry.key,entry.valueVersion.value,entry.valueVersion.version)
 
-/* TODO TEST THIS....... then implement container
- creation in LDP enableService() maybe needs params so can specify a public container
+/* TODO (updated29-01-2018):
+[/] clarify/fix how to access an MD without creating it (see my getServicesMdFor)
+    See my Dev Forum question: https://forum.safedev.org/t/safe-dom-api-how-to-access-public-mutable-data/1378?u=happybeing
+[/] test what I have below
+[ ] implement container creation in LDP setupServiceForHost() maybe needs params so can specify a public container
  for use and/or creation
- then try to use LDP to update a container that is also accessible by www service!
+[ ] migrate and test RS code to LDP service, but still using _public (not the LDP container)
+[ ] refactor LDP service:
+[ ]   1. async/await
+[ ]   2. use the LDP container
+[ ]   3. test update to container
+[ ]   4. test access to LDP container by owner
+[ ]   5. test access to LDP container by NON-owner
+[ ] try to use LDP to update a container that is also accessible by www service!
+[ ] fix SAFE API issue with safeNfs.create() and
+[ ]   1. update first PoC (write/read block by owner only)
+[ ]   2. create second PoC (which allows me to write blog, others to read it)
+[ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
 */
+
+    await this.listAvailableServices()
+    await this.listHostedServices()
+
     // Install an LDP service
     let profile = 'ldp'
-    name = 'testname3'
+//    name = 'testname21'
     let serviceId = 'ldp'
     let servicesMd = await this.getServicesMdFor(name)
     if (servicesMd) {
       safeLog("servicesMd for public name '%s' contains...",name)
-      this.safeWeb().listMd(servicesMd)
+      await this.listMd(servicesMd)
 
-      let serviceInterface = this.getServiceImplementation(serviceId)
+      let serviceInterface = await this.getServiceImplementation(serviceId)
       let host = profile + '.' + name
-      serviceInterface.enableService(host,servicesMd)
+
+      // Set-up the servicesMD
+      let serviceValue = await serviceInterface.setupServiceForHost(host,servicesMd)
+
+      // Activate the service for this host
+      let hostedService = await serviceInterface.makeServiceInstance(host,serviceValue)
+      this.setActiveService(host,hostedService)
 
       safeLog("servicesMd for public name '%s' contains...",name)
-      this.safeWeb().listMd(servicesMd)
+      await this.listMd(servicesMd)
     }
-    // NOTES:
-    //  testname1 thru 3 have entries in _publicNames (create successful)
-//    await this.createPublicName(name)
-    await this.listContainer('_publicNames')
 
-    await this.listAvailableServices()
     await this.listHostedServices()
+
+    // TODO try this...
+    /* Later test createPublicNameAndSetupService()
+    safeLog( 'TEST createPublicNameAndSetupService()')
+    let publicName = 'allatonce1'
+    let createResult = this.createPublicNameAndSetupService(publiceName,'ldp')
+    safeLog()'test result: %O', createResult)
+    */
 
     safeLog('TEST END')
 
@@ -558,15 +779,15 @@ let publicName = host.split('.')[1]
 
   async listAvailableServices(){
    safeLog('listAvailableServices()...')
-   this._availableServices.forEach((v,k) => {
-     safeLog("%s: '%s' - %s", k, v.getName(), v.getDescription())
+   await this._availableServices.forEach( async (v,k) => {
+     safeLog("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
    });
   }
 
   async listHostedServices(){
    safeLog('listHostedServices()...')
-   this._hostedServices.forEach((v,k) => {
-     safeLog("%s: '%s' - %s", k, v.getName(), v.getDescription())
+   await this._activeServices.forEach( async (v,k) => {
+     safeLog("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
    });
   }
 
@@ -595,6 +816,7 @@ let publicName = host.split('.')[1]
  *
  * DRAFT spec: https://forum.safedev.org/t/safe-services-npm-module/1334
  */
+
 class ServiceInterface {
   // An abstract class which defines the interface to a SAFE Web Service
   //
@@ -604,71 +826,77 @@ class ServiceInterface {
   // by providing an implementation that follows this template, and installing
   // it in the SafeWebApi object.
 
-  //
-  // To implement a SAFE web service:
-  // - extend this class and implement your service specific functionality
-  // - make the service available on an instance of class SafeWeb
-  // - enable the service for a given safe address (safe://[profile].public-name)
-  // TODO provide way to do points 2 & 3 above
-
-  constructor(safeWeb) {
-    this._safeWeb =       safeWeb
-    this._serviceConfig = {}
-
-    // Clear properties until enabled for a host
-    this.host = ''
-  }
-
-  set host(v){   this._host = v}
-  get host(){    return this._host}
-
-  safeWeb(){        return this._safeWeb }
-  serviceConfig(){  return this._serviceConfig }
-
-  getName(){        return this.serviceConfig().friendlyName }
-  getDescription(){ return this.serviceConfig().description }
-  getIdString(){    return this.serviceConfig().idString }
-  getTagType(){     return this.serviceConfig().tagType }
-
-  // Settings once service is enabled for a host
   /*
-   * To provide a new SAFE web service:
-   * - extend this class provide a constructor which calls super(safeWeb)
-   *   and initialises the properties of this._serviceConfig
-   * - provide service specific implementations of the following methods
+   * To provide a new SAFE web service extend this class to:
+   * - provide a constructor which calls super(safeWeb) and initialises
+   *   the properties of this._serviceConfig
+   * - enable the service for a given SAFE host (safe://[profile].public-name)
    *
    * Refer to class SafeServiceLDP for guidance.
    */
 
-  // Initialise an services MD with an entry for this service
-  //
-  // @param servicesMd
-  //
-  // @returns a promise which resolves to the servicesMd
-  async enableService(host,servicesMd){
-    safeLog('%s.enableService(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
-    throw('ServiceInterface.enableService() not implemented for ' + this.getName() + ' service')
-    this.host = host
+  constructor(safeWeb) {
+    this._safeWeb =       safeWeb
+
+    // Should be set in service implementation constructor:
+    this._serviceConfig = {}
+
+    // Properties which must be set by setupServiceForHost()
+    this._host = ''
+    this._serviceValue = ''
   }
 
-  // Create an instance of your service from a servicesMd entry
-  //
-  // @param serviceValue is the value stored in the servicesMd by your enableService() implementation
-  async cloneService(serviceValue){
-    throw('ServiceInterface.cloneService() not implemented for ' + this.getName() + ' service')
+  // Free any cached DOM API handles (should be called by anything discarding an active service)
+  freeHandles(){}
 
-    /* Your implementation should call this method and store a copy of serviceValue
-     * for use within the _fetch() implementation, along with any other initialisation
-     * needed. For example:
+  safeWeb(){        return this._safeWeb }
 
-      async cloneService(serviceValue){
-        let hostService = await new this.constructor.name(this.safeWeb())
-        await hostService.initialiseClone(serviceValue) // Probably stores serviceValue for use in _fetch()
-        return hostService
-      }
+  getName(){        return this.getServiceConfig().friendlyName }
+  getDescription(){ return this.getServiceConfig().description }
+  getIdString(){    return this.getServiceConfig().idString }
+  getTagType(){     return this.getServiceConfig().tagType }
 
-     */
+// Initialise a services MD with an entry for this host
+//
+// Your implementation should:
+//  - create any service specific objects on the network (e.g. a container MD to store files)
+//  - make a serviceValue to be stored in the services MD entry for this host
+//  - mutate the service MD to add the service on the MD for the given host (profile.public-name)
+//
+// @param servicesMd
+//
+// @returns a promise which resolves to the services entry value for this service
+  async setupServiceForHost(host,servicesMd){
+    safeLog('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
+    throw('ServiceInterface.setupServiceForHost() not implemented for ' + this.getName() + ' service')
+    /* Example:
+TODO
+    */
   }
+
+  // Create an instance of a service inistalised for a given host
+  //  - create and intitialise a new instance of this service implementation
+  //
+  // @param serviceValue  from the services MD for this host
+  //
+  // @returns a promise which resolves to a new instance of this service for the given host
+  async makeServiceInstance(host,serviceValue){
+    safeLog('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED',  this.constructor.name, host, serviceValue)
+    throw('%s.makeServiceInstance() not implemented for ' + this.getName() + ' service',  this.constructor.name)
+    /* Example:
+    let hostService = await new this.constructor(this.safeWeb())
+    hostService._host = host
+    hostService._serviceConfig = this.getServiceConfig()
+    hostService._serviceValue = serviceValue
+    return hostService
+    */
+  }
+
+  // Your makeServiceInstance() implementation must set the following properties:
+  getHost(){          return this._host }           // The host on which service is active (or null)
+  getServiceConfig(){ return this._serviceConfig }  // This should be a copy of this.getServiceConfig()
+  getServiceSetup(){  return this._serviceConfig.setupDefaults }
+  getServiceValue(){  return this._serviceValue }   // The serviceValue for an enabled service (or undefined)
 
   // Handle web style operations for this service in the manner of browser window.fetch()
   //
@@ -696,6 +924,13 @@ class SafeServiceWww extends ServiceInterface {
       friendlyName:         "WWW",
       description:          "www service (defers to SAFE webFetch)",
 
+      // Service Setup - configures behaviour of setupServiceForHost()
+      setupDefaults: {
+        setupNfsContainer:   true,        // Automatically create a file store for this host
+        defaultRootContainer: '_public',  // ...in container (e.g. _public, _documents, _pictures etc.)
+        defaultContainerName: 'root-www', // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
+      },
+
       // Don't change this unless you are defining a brand new service
       idString:  'www', // Uses:
                         // to direct URI to service (e.g. safe://www.somesite)
@@ -705,32 +940,46 @@ class SafeServiceWww extends ServiceInterface {
       tagType:    SN_TAGTYPE_WWW,  // Mutable data tag type (don't change!)
     }
   }
-  // Initialise an services MD with an entry for this service
+
+  // Initialise a services MD with an entry for this host
+  //
+  // Your implementation should:
+  //  - create any service specific objects on the network (e.g. a container MD to store files)
+  //  - make a serviceValue to be stored in the services MD entry for this host
+  //  - mutate the service MD to add the service on the MD for the given host (profile.public-name)
   //
   // @param servicesMd
   //
-  // @returns a promise which resolves to the servicesMd
-  async enableService(host,servicesMd){
+  // @returns a promise which resolves to the services entry value for this service
+  async setupServiceForHost(host,servicesMd){
     // This is not implemented for www because this service is passive (see _fetch() below)
     // and so a www service must be set up using another application such as
     // the Maidsafe Web Hosting Manager example. This can't be done here
     // because the user must specify a name for a public container.
-    safeLog('%s.enableService(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
-    throw('%s.enableService() not implemented for ' + this.getName() + ' service',  this.constructor.name)
-    this.host = host
+    safeLog('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
+    throw('%s.setupServiceForHost() not implemented for ' + this.getName() + ' service',  this.constructor.name)
+
+    /* Example:
+TODO
+    */
   }
 
-  // Create an instance of your service from a servicesMd entry
+  // Create an instance of a service inistalised for a given host
+  //  - create and intitialise a new instance of this service implementation
   //
-  // @param serviceValue is the value stored in the servicesMd by your enableService() implementation
-  async cloneService(serviceValue){
-    let hostService = await new this.constructor.name(this.safeWeb())
-    await hostService.initialiseWwwService(serviceValue)
+  // @param serviceValue  from the services MD for this host
+  //
+  // @returns a promise which resolves to a new instance of this service for the given host
+  async makeServiceInstance(host,serviceValue){
+    safeLog('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED',  this.constructor.name, host, serviceValue)
+    throw('%s.makeServiceInstance() not implemented for ' + this.getName() + ' service',  this.constructor.name)
+    /* Example:
+    let hostService = await new this.constructor(this.safeWeb())
+    hostService._host = host
+    hostService._serviceConfig = this.getServiceConfig()
+    hostService._serviceValue = serviceValue
     return hostService
-  }
-
-  async inistialiseWwwService(serviceValue){
-    this._serviceValue = serviceValue // TODO not needed if _fetch() just defers to window.webFetch()
+    */
   }
 
   // Handle web style operations for this service in the manner of browser window.fetch()
@@ -739,7 +988,7 @@ class SafeServiceWww extends ServiceInterface {
   //
   // @returns see window.fetch() and your services specification
   async _fetch(){
-    safeLog('%s.%s(%o) calling window.webFetch()', this.constructor.name, Function.name, arguments)
+    safeLog('%s._fetch(%o) calling window.webFetch()', this.constructor.name, arguments)
     return window.webFetch.apply(null,arguments)
   }
 }
@@ -751,12 +1000,21 @@ class SafeServiceLDP extends ServiceInterface {
 
     // Service configuration (maps to a SAFE API Service)
     this._serviceConfig = {
+
       // UI - to help identify the service in user interface
       //    - don't match with these in code (use the idString or tagType)
       friendlyName:         "LDP",
       description:          "LinkedData Platform (http://www.w3.org/TR/ldp/)",
 
-      // Don't change this unless you are defining a brand new service
+      // Service Setup - configures behaviour of setupServiceForHost()
+      setupDefaults: {
+        setupNfsContainer:   true,        // Automatically create a file store for this host
+        defaultRootContainer: '_public',  // ...in container (e.g. _public, _documents, _pictures etc.)
+        defaultContainerName: 'root-ldp', // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
+      },
+
+      // SAFE Network Service Identity
+      // - only change this to implementing a new service
       idString:  'ldp', // Uses:
                         // to direct URI to service (e.g. safe://ldp.somesite)
                         // identify service in _publicNames (e.g. happybeing@ldp)
@@ -764,40 +1022,67 @@ class SafeServiceLDP extends ServiceInterface {
       tagType:    SN_TAGTYPE_LDP,  // Mutable data tag type (don't change!)
     }
   }
-  // Initialise an services MD with an entry for this service
+  // TODO copy theses function header comments to above, (also example code)
+  // Initialise a services MD with an entry for this host
   //
+  // User must grant permission on a services MD, and probably also the
+  // _public container, if the service creates file storage for example
+  //
+  // NOTE: the SAFE _public container has entries for each MD being used
+  // as a file store, and by convention the name reflects both the
+  // public name and the service which created the container. So for
+  // a www service on host 'blog.happybeing' you would expect
+  // an entry in _public with key '_public/qw2/root-www' and a
+  // value which is a hash of the MD used to store files (see SAFE NFS).
+  //
+  // Your implementation should:
+  //  - create any service specific objects on the network (e.g. a container MD to store files)
+  //  - make a serviceValue to be stored in the services MD entry for this host
+  //  - mutate the service MD to add the service on the MD for the given host (profile.public-name)
+  //
+  // @param host is host part of the URI (ie [profile.]public-name)
   // @param servicesMd
+  // @param [-] optional service specific parameters, such as name for a new _public container
   //
-  // @returns a promise which resolves to the servicesMd
-  async enableService(host,servicesMd){
-    safeLog('%s.enableService(%s,%o)', host, this.constructor.name, servicesMd)
-    this.host = host
+  // @returns a promise which resolves to the services entry value for this service
+  // TODO move this to the super class - many implementations will be able to just change setupConfig
+  async setupServiceForHost(host,servicesMd){
+    safeLog('%s.enableService(%s,%o)',  this.constructor.name, host, servicesMd)
     let uriProfile = host.split('.')[0]
     let publicName = host.split('.')[1]
-    let serviceKey = this.safeWeb().makeServiceEntryKey(uriProfile,this.getServiceId())
+    if (publicName == undefined){
+      publicName = host
+      uriProfile = ''
+    }
+    let serviceKey = this.safeWeb().makeServiceEntryKey(uriProfile,this.getIdString())
 
-    let serviceValue = '<test value for LDP service>' // TODO create/store address of a public container, maybe parameterised?
+    let serviceValue = ''   // Default is do nothing
+    let setup = this.getServiceConfig().setupDefaults
+    if (setup.setupNfsContainer){
 
-    await this.safeWeb().setMutableDataEntry(servicesMd,serviceKey,serviceValue)
+      let nameAndTag = await this.safeWeb().createPublicContainer(
+        setup.defaultRootContainer,publicName,setup.defaultContainerName,this.getTagType())
+
+      serviceValue = nameAndTag.name.buffer
+      await this.safeWeb().setMutableDataValue(servicesMd,serviceKey,serviceValue)
+    }
+    return serviceValue
   }
 
-  // Create an instance of your service from a servicesMd entry
+  // TODO copy theses function header comments to above, (also example code)
+  // Create an instance of a service inistalised for a given host
+  //  - create and intitialise a new instance of this service implementation
   //
-  // @param serviceValue is the value stored in the servicesMd by your enableService() implementation
-  async cloneService(serviceValue){
-    throw('ServiceInterface.cloneService() not implemented for ' + this.getName() + ' service')
-
-    /* Your implementation should call this method and store a copy of serviceValue
-     * for use within the _fetch() implementation, along with any other initialisation
-     * needed. For example:
-
-      async cloneService(serviceValue){
-        let hostService = await new this.constructor.name(this.safeWeb())
-        await hostService.initialiseLdpService(serviceValue) // Probably stores serviceValue for use in _fetch()
-        return hostService
-      }
-
-     */
+  // @param serviceValue  from the services MD for this host
+  //
+  // @returns a promise which resolves to a new instance of this service for the given host
+  async makeServiceInstance(host,serviceValue){
+    safeLog('%s.makeServiceInstance(%s,%s)',  this.constructor.name, host, serviceValue)
+    let hostService = await new this.constructor(this.safeWeb())
+    hostService._host = host
+    hostService._serviceConfig = this.getServiceConfig()
+    hostService._serviceValue = serviceValue
+    return hostService
   }
 
   // Handle web style operations for this service in the manner of browser window.fetch()
