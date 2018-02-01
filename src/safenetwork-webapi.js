@@ -6,7 +6,7 @@
  *
  */
 
-// TODO see TODO inside testsAuth below
+// TODO see TODO inside testsAfterAuth below
 // TODO migrate and refactor LDP implementation here, from safenetwork-solid.js
 // TODO maybe provide methods to enumerate public names & services
 // TODO refactor to eliminate memory leaks (e.g. using 'finally')
@@ -109,9 +109,9 @@ class SafeWeb {
 
       let mutationHandle = await window.safeMutableData.newMutation(this.appHandle())
       if (entry)
-        await window.safeMutableDataMutation.update(mutationHandle,key,mdHandle,value.version+1)
+        await window.safeMutableDataMutation.update(mutationHandle,key,value.version+1)
       else
-        await window.safeMutableDataMutation.insert(mutationHandle,key,mdHandle)
+        await window.safeMutableDataMutation.insert(mutationHandle,key,value)
 
       await window.safeMutableData.applyEntriesMutation(mdHandle, mutationHandle)
       safeLog('Mutable Data Entry %s',(mustNotExist ? 'inserted' : 'updated'));
@@ -188,18 +188,17 @@ class SafeWeb {
     let createResult = undefined
 
     try {
-      let service = this._availableServices.get(serviceId)
+      let service = await this._availableServices.get(serviceId)
       if (!service){
         throw new Error('requested service \''+serviceId+'\' is not available')
       }
 
-      createResult = await _createPublicName(publicName)
+      createResult = await this._createPublicName(publicName)
       let servicesMd = createResult.servicesMd
-      delete createResult.servicesMd
 
       let host = publicName
       if (hostProfile != undefined && hostProfile != '')
-        host = hostProfile+'.'+hostPublicName
+        host = hostProfile+'.'+ publicName
 
       createResult.serviceValue = await service.setupServiceForHost(host,createResult.servicesMd)
       window.safeMutableData.free(servicesMd)
@@ -255,12 +254,9 @@ class SafeWeb {
   async createPublicContainer(rootContainer,publicName,containerName,mdTagType){
     safeLog('createPublicContainer(%s,%s,%s,%s)...',rootContainer,publicName,containerName,mdTagType)
     try {
+      // Create the new container
       let mdHandle = await window.safeMutableData.newRandomPublic(this.appHandle(),mdTagType)
-
       let entriesHandle = await window.safeMutableData.newEntries(this.appHandle())
-      // TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
-      await window.safeMutableDataEntries.insert(entriesHandle, 'key1', 'value1')
-
       // TODO review this with Web Hosting Manager (where it creates a new root-www container)
       // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
       let pmSet = ['Read','Update','Insert','Delete','ManagePermissions'];
@@ -269,6 +265,11 @@ class SafeWeb {
       await window.safeMutableDataPermissions.insertPermissionsSet(pmHandle, pubKey, pmSet)
       await window.safeMutableData.put(mdHandle, pmHandle,entriesHandle)
       let nameAndTag = await window.safeMutableData.getNameAndTag(mdHandle)
+
+      // Create an entry in rootContainer (fails if key exists for this container)
+      let rootMd = await window.safeApp.getContainer(this.appHandle(),rootContainer)
+      let rootKey = '/'+rootContainer+'/'+publicName+'/'+containerName
+      await this.setMutableDataValue(rootMd,rootKey,nameAndTag.name.buffer)
       window.safeMutableData.free(mdHandle)
       return nameAndTag
     } catch (err){
@@ -294,7 +295,7 @@ class SafeWeb {
     let serviceValue = undefined
 
     try {
-      let service = this._availableServices.get(serviceId)
+      let service = await this._availableServices.get(serviceId)
       if (!service){
         throw new Error('requested service \''+serviceId+'\' is not available')
       }
@@ -330,8 +331,9 @@ class SafeWeb {
       if (entry)
         throw new Error('Can\'t create _publicNames entry, already exists for \`'+publicName+"'")
 
- // TODO move servicesMd commit to after, successful mutation of the _publicNames entry
       // Create a new services MD (fails if the publicName is taken)
+      // Do this before updating _publicNames and even if that fails, we
+      // still own the name so TODO check here first, if one exists that we own
       let servicesMdName = await this.makeServicesMdName(publicName)
       let servicesMd = await window.safeMutableData.newPublic(this.appHandle(),servicesMdName,SN_TAGTYPE_SERVICES)
 
@@ -339,9 +341,12 @@ class SafeWeb {
       await window.safeMutableDataMutation.insert(servicesMutation, 'key1', 'value1')
       await window.safeMutableData.applyEntriesMutation(servicesMd, servicesMutation)
 */
-      let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
-      // TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
+
+    let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
+/*** TRY WITHOUT
+// TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
       await window.safeMutableDataEntries.insert(servicesEntriesHandle, 'key1', 'value1')
+*/
 //TODO NEXT...
       // TODO review this with Web Hosting Manager (separate into a make or init servicesMd function)
       // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
@@ -683,62 +688,64 @@ class SafeWeb {
 
   ////// TODO debugging helpers (to remove):
 
+  /* TODO (updated29-01-2018):
+  [/] clarify/fix how to access an MD without creating it (see my getServicesMdFor)
+      See my Dev Forum question: https://forum.safedev.org/t/safe-dom-api-how-to-access-public-mutable-data/1378?u=happybeing
+  [/] test what I have below
+  [/] implement container creation in LDP setupServiceForHost() maybe needs params so can specify a public container
+   for use and/or creation
+  [ ] test createPublicNameAndSetupService()
+  [ ] test setupServiceOnHost()
+  [ ] migrate and test RS code to LDP service, but still using _public (not the LDP container)
+  [ ] refactor LDP service:
+  [ ]   1. async/await
+  [ ]   2. use the LDP container
+  [ ]   3. test update to container
+  [ ]   4. test access to LDP container by owner
+  [ ]   5. test access to LDP container by NON-owner
+  [ ] try to use LDP to update a container that is also accessible by www service!
+  [ ] fix SAFE API issue with safeNfs.create() and
+  [ ]   1. update first PoC (write/read block by owner only)
+  [ ]   2. create second PoC (which allows me to write blog, others to read it)
+  [ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
+  */
+
+
   testsNoAuth(){
     safeLog('testsNoAuth() called!')
   }
 
   // TODO prototyping only for now:
-  async testsAuth(publicHandle,nfsHandle){
-    safeLog('>>>> testsAuth(%o,%o)', publicHandle, nfsHandle)
+  async testsAfterAuth(publicHandle,nfsHandle){
+    safeLog('>>>>>> T E S T S testsAfterAuth(%o,%o)', publicHandle, nfsHandle)
 
-  try {
-    /*
-     let authUri = await window.safeApp.authoriseContainer(this.appHandle(),
-                                { _publicNames: ['Read','Insert','Update'] })
+    try {
+      await this.listContainer('_public')
+      await this.listContainer('_publicNames')
 
-    safeLog('App was authorised and auth URI received: ', authUri)
-    */
+      this.test_createPublicNameAndSetupService('testname11','test','ldp')
+      //this.test_setupServiceOnHost('testhost','ldp')
+    } catch (err) {
+      safeLog('Error: ', err)
+    }
+  }
 
+  async testServiceCreation1(publicName){
+    safeLog('>>>>>> TEST testServiceCreation1(%s)...',publicName)
+    let name=publicName
 
-    safeLog('TEST START create public name')
-    await this.listContainer('_publicNames')
-
-    let name = 'testname11'
-    // Entries so far: testname1 broken
-    // testname2 onwards should have valid esrvicesMd (with key1/value1)
-    //
-    await this.listContainer('_publicNames')
+    safeLog('TEST: create public name')
     let newNameResult = await this.createPublicName(name)
     await this.listContainer('_publicNames')
     let entry = await this.getPublicNameEntry(name);
     safeLog('_publicNames entry for \'%s\':\n   Key: \'%s\'\n   Value: \'%s\'\n   Version: %s',name,entry.key,entry.valueVersion.value,entry.valueVersion.version)
-
-/* TODO (updated29-01-2018):
-[/] clarify/fix how to access an MD without creating it (see my getServicesMdFor)
-    See my Dev Forum question: https://forum.safedev.org/t/safe-dom-api-how-to-access-public-mutable-data/1378?u=happybeing
-[/] test what I have below
-[ ] implement container creation in LDP setupServiceForHost() maybe needs params so can specify a public container
- for use and/or creation
-[ ] migrate and test RS code to LDP service, but still using _public (not the LDP container)
-[ ] refactor LDP service:
-[ ]   1. async/await
-[ ]   2. use the LDP container
-[ ]   3. test update to container
-[ ]   4. test access to LDP container by owner
-[ ]   5. test access to LDP container by NON-owner
-[ ] try to use LDP to update a container that is also accessible by www service!
-[ ] fix SAFE API issue with safeNfs.create() and
-[ ]   1. update first PoC (write/read block by owner only)
-[ ]   2. create second PoC (which allows me to write blog, others to read it)
-[ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
-*/
-
     await this.listAvailableServices()
     await this.listHostedServices()
 
+    safeLog('TEST: install service on \'%s\'', name)
     // Install an LDP service
     let profile = 'ldp'
-//    name = 'testname21'
+//    name = name + '.0'
     let serviceId = 'ldp'
     let servicesMd = await this.getServicesMdFor(name)
     if (servicesMd) {
@@ -761,20 +768,29 @@ class SafeWeb {
 
     await this.listHostedServices()
 
-    // TODO try this...
-    /* Later test createPublicNameAndSetupService()
-    safeLog( 'TEST createPublicNameAndSetupService()')
-    let publicName = 'allatonce1'
-    let createResult = this.createPublicNameAndSetupService(publiceName,'ldp')
-    safeLog()'test result: %O', createResult)
-    */
+    safeLog('<<<<<< TEST END')
+  }
 
-    safeLog('TEST END')
+  async test_createPublicNameAndSetupService(publicName,hostProfile,serviceId){
+    safeLog('>>>>>> TEST: createPublicNameAndSetupService(%s,%s,%s)...',publicName,hostProfile,serviceId)
+    let createResult = await this.createPublicNameAndSetupService(publicName,hostProfile,'ldp')
+    safeLog('test result: %O', createResult)
 
-    } catch (err) {
-      safeLog('Error: ', err)
-    }
+    await this.listContainer('_publicNames')
+    await this.listContainer('_public')
+    await this.listHostedServices()
+    safeLog('<<<<<< TEST END')
+  }
 
+  async test_setupServiceOnHost(host,serviceId){
+    safeLog('>>>>>> TEST setupServiceOnHost(%s,%s)',host,serviceId)
+    let createResult = await this.setupServiceOnHost(host,serviceId)
+    safeLog('test result: %O', createResult)
+
+    await this.listContainer('_publicNames')
+    await this.listContainer('_public')
+    await this.listHostedServices()
+    safeLog('<<<<<< TEST END')
   }
 
   async listAvailableServices(){
@@ -1047,7 +1063,7 @@ class SafeServiceLDP extends ServiceInterface {
   // @returns a promise which resolves to the services entry value for this service
   // TODO move this to the super class - many implementations will be able to just change setupConfig
   async setupServiceForHost(host,servicesMd){
-    safeLog('%s.enableService(%s,%o)',  this.constructor.name, host, servicesMd)
+    safeLog('%s.setupServiceForHost(%s,%o)',  this.constructor.name, host, servicesMd)
     let uriProfile = host.split('.')[0]
     let publicName = host.split('.')[1]
     if (publicName == undefined){
@@ -1110,7 +1126,7 @@ exports = module.exports =  SafeWeb.bind(safeWeb);
 module.exports.setSafeApi = SafeWeb.prototype.setSafeApi.bind(safeWeb)
 module.exports.listContainer = SafeWeb.prototype.listContainer.bind(safeWeb)
 module.exports.testsNoAuth = SafeWeb.prototype.testsNoAuth.bind(safeWeb)
-module.exports.testsAuth = SafeWeb.prototype.testsAuth.bind(safeWeb)
+module.exports.testsAfterAuth = SafeWeb.prototype.testsAfterAuth.bind(safeWeb)
 
 // Create and export LDP service for Solid apps:
 //

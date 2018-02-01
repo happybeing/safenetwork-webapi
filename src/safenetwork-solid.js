@@ -349,7 +349,7 @@ SafenetworkLDP.prototype = {
           });*/
           safeLog('SAFEApp authorised and configured');
           self._isAuthorised = true;
-          safeWeb.testsAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
+          safeWeb.testsAfterAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
           return true
         }
       } catch (err){
