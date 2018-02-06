@@ -1,17 +1,41 @@
 /**
- * SAFEnetwork API for public names and web style SAFEnetwork services
+ * SAFEnetwork Web API
  *
- * Includes tentative service implementations for www, LDP
- * Service implentations are easy to replace or add to (see ServiceInterface)
+ * Supports:
+ *  - safe:// URIs for any code using window.fetch()
+ *  - TODO application authorisation and connection to SAFE network
+ *  - creation of SAFE network public names and services
+ *  - tentative web service implementations for www, LDP
+ *  - ability add services or override the default implementations
  *
  */
 
-// TODO see TODO inside testsAfterAuth below
-// TODO migrate and refactor LDP implementation here, from safenetwork-solid.js
+/* TODO
+=2q]
+[ ] migrate and test RS code to LDP service, but still using _public (not the LDP container)
+[ ] refactor LDP service:
+[ ]   1. async/await
+[ ]   2. use the LDP container
+[ ]   3. test update to container
+[ ]   4. test access to LDP container by owner
+[ ]   5. test access to LDP container by NON-owner
+[ ] try to use LDP to update a container that is also accessible by www service!
+[ ] fix SAFE API issue with safeNfs.create() and
+see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-string-buffer-arraybuffer-array/1325/23?u=happybeing)
+[ ]   1. update first PoC (write/read block by owner only)
+[ ]   2. create second PoC (which allows me to write blog, others to read it)
+[ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
+[ ] consider: extend safeWeb to support app config? NOT SURE - could keep this outside
+[ ]   1. review what functions, config, defaults, handles to cache etc
+[ ]   2. merge in the SAFE Auth code (from safenetwork-solid.js):
+*/
+// TODO NEXT>>>> migrate and refactor LDP implementation here, from safenetwork-solid.js
 // TODO maybe provide methods to enumerate public names & services
 // TODO refactor to eliminate memory leaks (e.g. using 'finally')
-// TODO consider adding other web services (e.g. WebDav)
+// TODO consider adding other web services (e.g. www, WebDav)
+// TODO disallow service creation with empty profile for all but www
 // TODO consider whether a service could implement basic file sharing / URI shortening
+// TODO go through todos in the code...
 
 const safeLog = require('debug')('safe:web')  // Decorated console output
 
@@ -29,6 +53,30 @@ const protocol = safeUtils.protocol
 const parentPath = safeUtils.parentPath
 
 /*
+ *  Example application config for SAFE Authenticator UI
+ *
+ * const appCfg = {
+ *   id:     'com.happybeing',
+ *   name:   'Solid Plume (Testing)',
+ *   vendor: 'happybeing.'
+ * }
+ *
+ */
+
+// Default permissions to request. Optional parameter to SafeWeb.simpleAuthorise()
+//
+const defaultPerms = {
+
+  // The following defaults have been chosen to allow creation of public names
+  // and containers, as required for accessing SAFE web services.
+  //
+  // If your app doesn't need those features it can specify only the permissions
+  // it needs when calling SafeWeb.simpleAuthorise()
+  _public:      ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
+  _publicNames: ['Read', 'Insert', 'Update', 'Delete'], // TODO maybe reduce defaults later
+}
+
+/*
  * Web API for SAFEnetwork
  * - public IDs
  * - web services (extendable through implementation modules)
@@ -39,22 +87,105 @@ const parentPath = safeUtils.parentPath
  */
 class SafeWeb {
   constructor(){
-    this._availableServices = new Map() // Map of installed services
+    this._availableServices = new Map // Map of installed services
     this.initialise()
   }
 
   initialise() {
-    this._activeServices = new Map     // Map of host (profile.public-name) to a service instance
-    // TODO if necessary, update/reset managed objects such as MDs
+    // TODO implement delete any active services
+
+    // SafeWeb Services
+    this._activeServices = new Map    // Map of host (profile.public-name) to a service instance
+
+    // DOM API settings and and authorisation status
+    this._safeAuthUri = ''
+    this._isConnected = false
+    this._isAuthorised = false
+    this._authOnAccessDenied = false  // Used by simpleAuthorise() and fetch()
+
+    // Application specific configuration required for authorisation
+    // TODO how is this set?
+    this._safeAppConfig = {}
+    this._safeAppPermissions = {}
   }
 
-  // Application must set/refresh the SAFE API handles if they become invalid:
+  /*
+   * Application API - authorisation with SAFE network
+   */
+
+  // Set SAFE DOM API application handle
+  //
+  // If application does its own safeApp.initialise, it must call setSafeApi()
+  // Application can call this again if it wants to clear/refresh DOM API handles
+  //
+  // @param a DOM API SAFEAppHandle, see window.safeApp.initialise()
+  //
   setSafeApi(appHandle){
-      this._appHandle = appHandle   // SAFE API application handle
-      this.initialise()
+    this.initialise()             // Clears active services (so DOM API handles will be discarded)
+    this._appHandle = appHandle   // SAFE API application handle
+  }
+
+  // Simplified authorisation with SAFE network
+  //
+  // Before you can use the SafeWeb API methods, you must authorise your application
+  // with SAFE network. This function provides simplified, one step authorisation, but
+  // you can authorise separately, including using the SAFE DOM API directly to
+  // obtain a valid SAFEAppHandle, which you MUST then use to initialise
+  // the SafeWeb API.
+  //
+  // - if using this method you don't need to do anything with the returned SAFEAppHandle
+  // - if authorising using another method, you MUST call SafeWeb.setApi() with a valid SAFEAppHandle
+  //
+  // @param appConfig      - information for auth UI - see DOM API window.safeApp.initialise()
+  // @param appPermissions - (optional) requested permissions - see DOM API window.safeApp.authorise()
+  //
+  // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
+  //
+  async simpleAuthorise(appConfig,appPermissions){
+    safeLog('%s.simpleAuthorise(%O,%O)...',constructor.name,appConfig,appPermissions);
+
+    // TODO ??? not sure what I'm thinking here...
+    // TODO probably best to have initialise called once at start so can
+    // TODO access the API with or without authorisation. So: remove the
+    // TODO initialise call to a separate point and only call it once on
+    // TODO load. Need to change freeSafeAPI() or not call it above.
+    this._safeAppConfig = appConfig
+    this._safeAppPermissions = ( appPermissions != undefined ? appPermissions : defaultPerms)
+    this._authOnAccessDenied = true // Enable auth inside SafeWeb.fetch() on 401
+
+    let appHandle
+    try {
+      appHandle = await window.safeApp.initialise(self._safeAppConfig, (newState) => {
+          // Callback for network state changes
+          safeLog('SafeNetwork state changed to: ', newState)
+          self._isConnected = newState
+        })
+
+        safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
+        safeWeb.setSafeApi(appHandle)
+        //safeWeb.testsNoAuth();  // TODO remove (for test only)
+
+        this._safeAuthUri = await window.safeApp.authorise(appHandle, this._safeAppPermissions, this._safeAppConfig.options)
+        safeLog('SAFEApp was authorised and authUri received: ', this._safeAuthUri);
+
+        await window.safeApp.connectAuthorised(appHandle, this._safeAuthUri)
+        safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
+        self._isAuthorised = true;
+        safeWeb.testsAfterAuth();  // TODO remove (for test only)
+        return appHandle
+
+      } catch (err){
+        safeLog('WARNING: ', err)
+      }
+
+      return appHandle
   }
 
   // For access to SAFE API:
+  appHandle(){  return this._appHandle }
+  safeAuthUri(){return this._safeAuthUri }
+  isConnected(){return this._isConnected }
+  isAuthoised(){return this._isAuthorised }
   appHandle(){  return this._appHandle }
   services(){   return this._availableServices }
 
@@ -348,16 +479,7 @@ class SafeWeb {
       let servicesMdName = await this.makeServicesMdName(publicName)
       let servicesMd = await window.safeMutableData.newPublic(this.appHandle(),servicesMdName,SN_TAGTYPE_SERVICES)
 
-/*      let servicesMutation = await window.safeMutableData.newMutation(this.appHandle())
-      await window.safeMutableDataMutation.insert(servicesMutation, 'key1', 'value1')
-      await window.safeMutableData.applyEntriesMutation(servicesMd, servicesMutation)
-*/
-
     let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
-/*** TRY WITHOUT
-// TODO see if there's a way to create MD without setting a key (maybe just set metadata?)
-      await window.safeMutableDataEntries.insert(servicesEntriesHandle, 'key1', 'value1')
-*/
 //TODO NEXT...
       // TODO review this with Web Hosting Manager (separate into a make or init servicesMd function)
       // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
@@ -373,7 +495,6 @@ class SafeWeb {
       // TODO   - pubKey? - ask why no free() functions for cyrpto library handles)
       // TODO   - servicesEntriesHandle (window.safeMutableData.newEntries doesn't say it should be freed)
       await window.safeMutableDataPermissions.free(pmHandle)
-//      await window.safeMutableDataMutation.free(servicesMutation)
 
       // TODO remove (test only):
       let r = await window.safeMutableData.getNameAndTag(servicesMd)
@@ -387,12 +508,7 @@ class SafeWeb {
       await window.safeMutableData.applyEntriesMutation(publicNamesMd, namesMutation)
       await window.safeMutableDataMutation.free(namesMutation)
 
-      // We've stored servicesMd in the _publicNames container, so commit servicesMd to the network
-/*      let servicesMutation = await window.safeMutableData.newMutation(this.appHandle())
-      await window.safeMutableDataMutation.insert(servicesMutation, 'key1', 'value1')
-      await window.safeMutableData.applyEntriesMutation(servicesMd, servicesMutation)
-      await window.safeMutableDataMutation.free(servicesMutation)
-*/      // TODO remove (test only):
+      // TODO remove (test only):
       r = await window.safeMutableData.getNameAndTag(servicesMd)
       safeLog('New Public servicesMd created with tag: ', r.type_tag, ' and name: ', r.name);
 
@@ -697,38 +813,79 @@ class SafeWeb {
 
   //////// TODO END of 'move to Service class/implementation'
 
+  /*
+   * Support safe:// URIs
+   *
+   * To enable safe:// URI support in any website/web app, all the app needs to
+   * do is use the standard window.fetch(), rather than XmlHttpRequest etc
+   *
+   */
+  //
+
+  // fetch() implementation for 'safe:' URIs
+  //
+  // This fetch is not intended to be called by the app directly. Instead,
+  // the app can use window.fetch() as normal, and that will automatically
+  // be redirected to this implementation for 'safe:' URIs.
+  //
+  // This means that an existing website/web app which uses window.fetch()
+  // will automatically support 'safe:' URIs without needing to change
+  // and fetch() calls. If it uses an older browser API such as
+  // XmlHttpRequest, then to support 'safe:' URIs it must first be
+  // converted from those to use window.fetch() instead.
+  //
+  // @param docUri {string}
+  // @param options {Object}
+  //
+  // @returns null if not handled, or a {Promise<Object} on handling a safe: URI
+  //
+  async fetch (docUri, options){
+    safeLog('%s.fetch(%s,%o)...',constructor.name,docUri,options)
+    // TODO remove:
+//    return httpFetch(docUri,options) // TESTING so pass through
+
+    try {
+      //console.assert('safe' == protocol(docUri),protocol(docUri))
+      let allowAuthOn401 = true;
+      return self._fetch(docUri,options)
+    } catch (err){
+      try {
+        if (err.status == '401' && this._authOnAccessDenied && allowAuthOn401){
+          allowAuthOn401 = false; // Once per fetch attempt
+          await self.simpleAuthorise(???)
+          return self._fetch(docUri,options)
+        }
+      } catch (err){
+        ???
+      }
+    }
+  }
+
+  // Handle web style operations for this service in the manner of browser window.fetch()
+  //
+  // @params  see window.fetch() and your services specification
+  //
+  // @returns see window.fetch() and your services specification
+  async _fetch(docUri,options){
+    safeLog('%s.fetch(%s,%o)', this.constructor.name,docUri,options)
+    let service = await getServiceForUri(docUri)
+    if (service){
+      let handler = service.getHandler(options.method)
+      return handler.call(service,docUri,options)
+    }
+    else
+      return this.safeApp().webFetch(docUri,options)
+  }
+
   ////// TODO debugging helpers (to remove):
-
-  /* TODO (updated29-01-2018):
-  [/] clarify/fix how to access an MD without creating it (see my getServicesMdFor)
-      See my Dev Forum question: https://forum.safedev.org/t/safe-dom-api-how-to-access-public-mutable-data/1378?u=happybeing
-  [/] test what I have below
-  [/] implement container creation in LDP setupServiceForHost() maybe needs params so can specify a public container
-   for use and/or creation
-  [ ] test createPublicNameAndSetupService()
-  [ ] test setupServiceOnHost()
-  [ ] migrate and test RS code to LDP service, but still using _public (not the LDP container)
-  [ ] refactor LDP service:
-  [ ]   1. async/await
-  [ ]   2. use the LDP container
-  [ ]   3. test update to container
-  [ ]   4. test access to LDP container by owner
-  [ ]   5. test access to LDP container by NON-owner
-  [ ] try to use LDP to update a container that is also accessible by www service!
-  [ ] fix SAFE API issue with safeNfs.create() and
-  [ ]   1. update first PoC (write/read block by owner only)
-  [ ]   2. create second PoC (which allows me to write blog, others to read it)
-  [ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
-  */
-
 
   testsNoAuth(){
     safeLog('testsNoAuth() called!')
   }
 
   // TODO prototyping only for now:
-  async testsAfterAuth(publicHandle,nfsHandle){
-    safeLog('>>>>>> T E S T S testsAfterAuth(%o,%o)', publicHandle, nfsHandle)
+  async testsAfterAuth(){
+    safeLog('>>>>>> T E S T S testsAfterAuth()')
 
     try {
       await this.listContainer('_public')
@@ -870,6 +1027,7 @@ class ServiceInterface {
 
     // Should be set in service implementation constructor:
     this._serviceConfig = {}
+    this._serviceHandler = new Map  // Map 'GET', 'PUT' etc to handler function
 
     // Properties which must be set by setupServiceForHost()
     this._host = ''
@@ -885,6 +1043,17 @@ class ServiceInterface {
   getDescription(){ return this.getServiceConfig().description }
   getIdString(){    return this.getServiceConfig().idString }
   getTagType(){     return this.getServiceConfig().tagType }
+  setHandler(method,handler){  this._serviceHandler.put(method,handler) }
+  getHandler(method){
+    let handler = this._serviceHandler.get(method)
+    if (handler != undefined)
+      return handler
+
+    // Default handler when service does not provide one
+    return async function (){
+      return new Response({},{ ok: false, status: 405, statusText: '405 Method Not Allowed'})
+    }
+  }
 
 // Initialise a services MD with an entry for this host
 //
@@ -928,6 +1097,7 @@ TODO
   getServiceSetup(){  return this._serviceConfig.setupDefaults }
   getServiceValue(){  return this._serviceValue }   // The serviceValue for an enabled service (or undefined)
 
+// TODO remove _fetch() from ServiceInterface classes - now on SafeWeb
   // Handle web style operations for this service in the manner of browser window.fetch()
   //
   // @params  see window.fetch() and your services specification
@@ -1051,7 +1221,36 @@ class SafeServiceLDP extends ServiceInterface {
 
       tagType:    SN_TAGTYPE_LDP,  // Mutable data tag type (don't change!)
     }
+
+    // Provide a handler for each supported fetch() request method ('GET', 'PUT' etc)
+    //
+    // Each handler is a function with same parameters and return as window.fetch()
+    this.setHandler('GET',this.get)
+    this.setHandler('PUT',this.put)
+    this.setHandler('POST',this.post)
+    this.setHandler('DELETE',this.delete)
   }
+
+  async get(some,params){
+    safeLog('get() WOOT!!!!!!!!!!!!')
+    return new Response({},{ ok: false, status: 405, statusText: 'GET 405 Method Not Allowed'})
+  }
+
+  async put(some,params){
+    safeLog('put() WOOT!!!!!!!!!!!!')
+    return new Response({},{ ok: false, status: 405, statusText: 'PUT 405 Method Not Allowed'})
+  }
+
+  async post(some,params){
+    safeLog('post() WOOT!!!!!!!!!!!!')
+    return new Response({},{ ok: false, status: 405, statusText: 'POST 405 Method Not Allowed'})
+  }
+
+  async delete(some,params){
+    safeLog('delete() WOOT!!!!!!!!!!!!')
+    return new Response({},{ ok: false, status: 405, statusText: '405 Method Not Allowed'})
+  }
+
   // TODO copy theses function header comments to above, (also example code)
   // Initialise a services MD with an entry for this host
   //
@@ -1148,8 +1347,27 @@ module.exports.testsAfterAuth = SafeWeb.prototype.testsAfterAuth.bind(safeWeb)
 //
 // TODO move this to a services loading feature
 
-
+/*
 // TODO remove once SafenetworkServices implemented:
 let safeLDP = new SafeServiceLDP(safeWeb);
 
 module.exports.safeLDP =  ServiceInterface.bind(safeLDP);
+*/
+
+/*
+ *  Override window.fetch() in order to support safe:// URIs
+ */
+
+// Protocol handlers for fetch()
+const httpFetch = require('isomorphic-fetch')
+const protoFetch = require('proto-fetch')
+
+// map protocols to fetch()
+const fetch = protoFetch({
+  http: httpFetch,
+  https: httpFetch,
+  safe: SafeWeb.fetch.bind(safeWeb),
+//  https: Safenetwork.fetch.bind(Safenetwork), // Debugging with SAFE mock browser
+})
+
+module.exports.protoFetch = fetch;

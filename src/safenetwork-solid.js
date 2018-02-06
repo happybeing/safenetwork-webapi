@@ -1404,6 +1404,8 @@ module.exports.Configure =  SafenetworkLDP.prototype.Configure.bind(Safenetwork)
 module.exports.Enable =     SafenetworkLDP.prototype.Enable.bind(Safenetwork);
 module.exports.isEnabled =  SafenetworkLDP.prototype.isEnabled.bind(Safenetwork);
 
+/* TODO remove - this is now part of safenetwork-webapi.js
+
 // map protocols to fetch()
 const fetch = protoFetch({
   http: httpFetch,
@@ -1413,3 +1415,4 @@ const fetch = protoFetch({
 })
 
 module.exports.protoFetch = fetch;
+*/
