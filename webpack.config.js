@@ -45,7 +45,7 @@ module: {
 //    path: path.join(__dirname, '/dist/'),
     path: path.resolve(__dirname, 'dist'),
     filename: 'solid-safenetwork.js',
-    library: 'SafenetworkLDP',
+    library: 'SafenetworkWebApi',
     libraryTarget: 'umd'
   },
 /*

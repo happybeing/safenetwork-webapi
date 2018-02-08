@@ -29,8 +29,8 @@
 // Debugging
 localStorage.debug = 'safe:*' // breaks node-solid-server (comment out and 'npm run build' in rdflib.js)
 
-const safeLog = require('debug')('safe:solid')  // Coded for Solid
-const safeRsLog = require('debug')('safe:rs')   // Coded for RS.js
+const safeSolidLog = require('debug')('safe:solid') // Coded for Solid
+const safeRsLog = require('debug')('safe:rs')       // Coded for RS.js
 
 // TODO Until SAFE Web API is in a separate module, just 'require' it
 const safeWeb = require('./safenetwork-webapi')
@@ -231,7 +231,7 @@ const defaultPerms = {
 //
 var SafenetworkLDP = function (enable) {
   this._safeUriEnabled = (enable == undefined ? true : enable)
-  safeLog('SafenetworkLDP(%s)', this._safeUriEnabled)
+  safeSolidLog('SafenetworkLDP(%s)', this._safeUriEnabled)
 
 /* TODO:
   rdf.safenetworkLDP = this;
@@ -279,7 +279,7 @@ SafenetworkLDP.prototype = {
   // @param appConfig      - app details for UI (see example above)
   // @param appPermissions - (optional) requested permissions for SAFE storage (see example above)
   Configure: function (rdflib,solidConfig,appConfig,appPermissions){
-    safeLog('Configure(%o,%O,%O,%O)',rdflib,solidConfig,appConfig,appPermissions)
+    safeSolidLog('Configure(%o,%O,%O,%O)',rdflib,solidConfig,appConfig,appPermissions)
     if (rdflib != undefined && rdflib){
         //TODO maybe handle case where rdflib already has SAFE App state (copy to self first?)
         rdflib.SafenetworkLDP = this;
@@ -292,7 +292,7 @@ SafenetworkLDP.prototype = {
   },
 
   Enable: function (flag){
-    safeLog('Enable('+flag+')')
+    safeSolidLog('Enable('+flag+')')
     this._safeUriEnabled = flag;
 
     if ( flag && this._authImmediately )
@@ -312,7 +312,7 @@ SafenetworkLDP.prototype = {
  */
 
   async safenetworkAuthorise(){
-    safeLog('safenetworkAuthorise()...');
+    safeSolidLog('safenetworkAuthorise()...');
 
     var self = this;
     self.freeSafeAPI();
@@ -324,19 +324,19 @@ SafenetworkLDP.prototype = {
     try {
       let appHandle = await window.safeApp.initialise(self._safeAppConfig, (newState) => {
           // Callback for network state changes
-          safeLog('SafeNetwork state changed to: ', newState)
+          safeSolidLog('SafeNetwork state changed to: ', newState)
           self._connected = newState
         })
 
-        safeLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
+        safeSolidLog('SAFEApp instance initialised and appHandle returned: ', appHandle);
         safeWeb.setSafeApi(appHandle)
         //safeWeb.testsNoAuth();  // TODO remove (for test only)
 
         let authUri = await window.safeApp.authorise(appHandle, self._safeAppPermissions, self._safeAppConfig.options)
-        safeLog('SAFEApp was authorised and authUri received: ', authUri);
+        safeSolidLog('SAFEApp was authorised and authUri received: ', authUri);
 
         await window.safeApp.connectAuthorised(appHandle, authUri)
-        safeLog('SAFEApp was authorised & a session was created with the SafeNetwork');
+        safeSolidLog('SAFEApp was authorised & a session was created with the SafeNetwork');
 
         let mdHandle = await self._getSafeHandles(appHandle)
         if (mdHandle){
@@ -347,13 +347,13 @@ SafenetworkLDP.prototype = {
             permissions: self._safeAppPermissions, // Permissions used to request authorisation
             options: self._safeAppConfig.options, // Options used to request authorisation
           });*/
-          safeLog('SAFEApp authorised and configured');
+          safeSolidLog('SAFEApp authorised and configured');
           self._isAuthorised = true;
           safeWeb.testsAfterAuth(this._mdRoot,this._nfsRoot);  // TODO remove (for test only)
           return true
         }
       } catch (err){
-        safeLog('%s() FAILED: ', err)
+        safeSolidLog('%s() FAILED: ', err)
         self.freeSafeAPI();
       }
 
@@ -402,12 +402,12 @@ SafenetworkLDP.prototype = {
  */
 
   fetch: function (docUri, options){
-    safeLog('SafenetworkLDP.fetch(%s,%o)...', docUri, options)
+    safeSolidLog('SafenetworkLDP.fetch(%s,%o)...', docUri, options)
     var self = this;
 //    return httpFetch(docUri,options) // TESTING so pass through
 
     if (!self.isEnabled()){
-      safeLog('WARNING: safe:// URI handling is not enabled so this will fail')
+      safeSolidLog('WARNING: safe:// URI handling is not enabled so this will fail')
       return httpFetch(docUri,options);
     }
 
@@ -462,7 +462,7 @@ SafenetworkLDP.prototype = {
  * @returns request result (a Promise)
 */
   _fetch: function(docUri,options){
-    safeLog('_fetch(%s:%s,{%o})...',options.method,docUri,options)
+    safeSolidLog('_fetch(%s:%s,{%o})...',options.method,docUri,options)
     let self = this
 
     // REMOVE THESE COMMENTS AFTER...
@@ -495,7 +495,7 @@ SafenetworkLDP.prototype = {
 
             // TODO if get() returns 404 (not found) return empty listing to fake existence of empty container
             if (response.status == 404)
-              safeLog('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
+              safeSolidLog('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
               return response;
           });
           break;
@@ -538,12 +538,12 @@ SafenetworkLDP.prototype = {
   },
 
   fakeCreateContainer: function (path,options){
-    safeLog('fakeCreateContainer(%s,{%o})...')
+    safeSolidLog('fakeCreateContainer(%s,{%o})...')
     return new Response({},{ ok: true, status: 201, statusText: '201 Created'})
   },
 
   fakeDeleteContainer: function (path,options){
-    safeLog('fakeDeleteContainer(%s,{%o})...')
+    safeSolidLog('fakeDeleteContainer(%s,{%o})...')
     return new Response({},{ ok: true, status: 200, statusText: 'OK'})
   },
 
@@ -1394,7 +1394,7 @@ let that trigger an error in this function, then fix the call to handle differen
     return result;
   },
 }
-
+/**/
 let Safenetwork = new SafenetworkLDP;
 
 // TODO maybe expose SafenetworkLDP get, put, delete?
@@ -1403,8 +1403,8 @@ exports = module.exports =  SafenetworkLDP.bind(Safenetwork);
 module.exports.Configure =  SafenetworkLDP.prototype.Configure.bind(Safenetwork);
 module.exports.Enable =     SafenetworkLDP.prototype.Enable.bind(Safenetwork);
 module.exports.isEnabled =  SafenetworkLDP.prototype.isEnabled.bind(Safenetwork);
-
-/* TODO remove - this is now part of safenetwork-webapi.js
+/**/
+/* TODO remove - this is now part of safenetwork-webapi.js*/
 
 // map protocols to fetch()
 const fetch = protoFetch({
@@ -1415,4 +1415,4 @@ const fetch = protoFetch({
 })
 
 module.exports.protoFetch = fetch;
-*/
+/**/
