@@ -17,18 +17,19 @@
 
 /* TODO:
 [/] migrate RS code to LDP service and refactor to async/await
-[ ] check everything in:
+[/] check everything in:
     - milestone-01 SafenetworkWebApi-coded-broken
     - git tag safe-v0.03
-[ ] revert to an earlier vertion without problems (below)
-[ ] slowly re-instate changes to isolate problems:
-    [ ] ???
-    [ ]
-    [ ]
-[ ]
-    [ ] fix problems caused by switch from SafenetworkLDP to SafenetworkWebApi:
-      [ ] safeWebLog() no longer outputs
-      [ ] solid-plume no longer behaves (e.g. Login > New Post etc)
+[/] revert to an earlier vertion without problems (below)
+[/] fix problems caused by switch from SafenetworkLDP to SafenetworkWebApi:
+  [/] safeWebLog() no longer outputs
+  [/] solid-plume no longer behaves (e.g. Login > New Post etc)
+[/] slowly re-instate changes to isolate problems:
+    [/] SORTED: issue is with peruse-mock and 'yarn dev'
+        WORKS using ~/src/safe/peruse-mock/release/linux-unpacked/peruse
+[/] revert back to latest code
+[/] check it now works
+[ ] test and debug SafenetworkWebAPi and LDP service:
 [ ]   1. test update to container
 [ ]   2. test access to LDP container by owner
 [ ]   3. test access to LDP container by NON-owner (ie while logged out)
