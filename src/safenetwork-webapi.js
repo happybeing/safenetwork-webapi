@@ -28,6 +28,7 @@
         WORKS using ~/src/safe/peruse-mock/release/linux-unpacked/peruse
 [/] revert back to latest code
 [/] check it now works
+[/] apply standard formatting (most but not all errors fixed)
 [ ] test and debug SafenetworkWebAPi and LDP service:
 [ ]   1. test update to container
 [ ]   2. test access to LDP container by owner
@@ -42,6 +43,7 @@ see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-s
 [ ]   1. implement a simple www service
 [ ]   2. implement RemoteStorage as a SAFE service
 [ ]   3. consider how to implement a file share / URL shortener as a service
+[ ] thorough linting
 */
 // TODO test get folder and then convert to proper LDP response
 // TODO disallow service creation with empty profile for all but www
@@ -49,8 +51,12 @@ see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-s
 // TODO refactor to eliminate memory leaks (e.g. using 'finally')
 // TODO consider adding other web services (e.g. WebDav)
 // TODO go through todos in the code...
+// TODO validate against LDP test suites:
+//  - https://w3c.github.io/ldp-testsuite/
+//  - https://github.com/solid/node-solid-server/tree/master/test/integration
 
 localStorage.debug = 'safe:*'
+
 const safeWebLog = require('debug')('safe:web')  // Decorated console output
 // TODO remove:
 // oldLog('SUDDENLY oldLog() is %s', 'working!!!!')
@@ -58,7 +64,11 @@ const safeWebLog = require('debug')('safe:web')  // Decorated console output
 
 const SN_TAGTYPE_SERVICES = 15001 // TODO get these from the API CONSTANTS
 const SN_TAGTYPE_WWW = 15002
+
+// TODO We might want to change SN_TAGTYPE_LDP to SN_TAGTYPE_WWW so that www fetch() works w/o this library,
+// TODO unless or until Peruse can fetch() an LDP service tagtype
 const SN_TAGTYPE_LDP = 80655     // Linked Data Protocol service (timbl's dob)
+const SN_SERVICEID_LDP = 'ldp'
 
 // TODO temporaty settings to review:
 const ENABLE_ETAGS = true       // false disables ifMatch / ifNoneMatch checks
@@ -66,12 +76,14 @@ const RS_DIR_MIME_TYPE = 'application/json; charset=UTF-8'
 
 const safeUtils = require('./safenetwork-utils')
 
+/* eslint-disable no-unused-vars */
 const isFolder = safeUtils.isFolder
 const docpart = safeUtils.docpart
 const pathpart = safeUtils.pathpart
 const hostpart = safeUtils.hostpart
 const protocol = safeUtils.protocol
 const parentPath = safeUtils.parentPath
+/* eslint-enable */
 
 /*
  *  Example application config for SAFE Authenticator UI
@@ -108,6 +120,7 @@ const defaultPerms = {
  */
 class SafenetworkWebApi {
   constructor () {
+    safeWebLog('SafenetworkWebApi()')
     this._availableServices = new Map() // Map of installed services
     this.initialise()
 
@@ -133,6 +146,19 @@ class SafenetworkWebApi {
     // TODO how is this set?
     this._safeAppConfig = {}
     this._safeAppPermissions = {}
+
+    /*
+     * Access to helpers and constants via the object (useful when <script> including this JS)
+     */
+    this.isFolder = isFolder
+    this.docpart = docpart
+    this.pathpart = pathpart
+    this.hostpart = hostpart
+    this.protocol = protocol
+    this.parentPath = parentPath
+
+    this.SN_TAGTYPE_LDP = SN_TAGTYPE_LDP
+    this.SN_SERVICEID_LDP = SN_SERVICEID_LDP
   }
 
   /*
@@ -175,29 +201,29 @@ class SafenetworkWebApi {
     // TODO access the API with or without authorisation. So: remove the
     // TODO initialise call to a separate point and only call it once on
     // TODO load. Need to change freeSafeAPI() or not call it above.
-    this._safeAppConfig = appConfig
-    this._safeAppPermissions = (appPermissions !== undefined ? appPermissions : defaultPerms)
     this._authOnAccessDenied = true // Enable auth inside SafenetworkWebApi.fetch() on 401
 
     let tmpAppHandle
     try {
-      tmpAppHandle = await window.safeApp.initialise(this._safeAppConfig, (newState) => {
+      tmpAppHandle = await window.safeApp.initialise(appConfig, (newState) => {
           // Callback for network state changes
         safeWebLog('SafeNetwork state changed to: ', newState)
         this._isConnected = newState
       })
 
       safeWebLog('SAFEApp instance initialised and appHandle returned: ', tmpAppHandle)
-      safeWeb.setSafeApi(tmpAppHandle)
-        // safeWeb.testsNoAuth();  // TODO remove (for test only)
+      this.setSafeApi(tmpAppHandle)
+      this._safeAppConfig = appConfig
+      this._safeAppPermissions = (appPermissions !== undefined ? appPermissions : defaultPerms)
 
+      // this.testsNoAuth();  // TODO remove (for test only)
       this._safeAuthUri = await window.safeApp.authorise(tmpAppHandle, this._safeAppPermissions, this._safeAppConfig.options)
       safeWebLog('SAFEApp was authorised and authUri received: ', this._safeAuthUri)
 
       await window.safeApp.connectAuthorised(tmpAppHandle, this._safeAuthUri)
       safeWebLog('SAFEApp was authorised & a session was created with the SafeNetwork')
       this._isAuthorised = true
-      safeWeb.testsAfterAuth()  // TODO remove (for test only)
+      this.testsAfterAuth()  // TODO remove (for test only)
       return tmpAppHandle
     } catch (err) {
       safeWebLog('WARNING: ', err)
@@ -366,7 +392,7 @@ class SafenetworkWebApi {
 
   // Create/reserve a new public name
   //
-  // See also createPublicNameWithService()
+  // See also createPublicNameAndSetupService()
   //
   // This includes creating a new services MD and inserting it into the _publicNames container
   //
@@ -543,7 +569,7 @@ class SafenetworkWebApi {
         'servicesMd': servicesMd
       }
     } catch (err) {
-      safeWebLog('_createPublicNameEntry() failed: ', err)
+      safeWebLog('_createPublicName() failed: ', err)
       throw err
     }
   }
@@ -591,12 +617,14 @@ class SafenetworkWebApi {
       let servicesName = await this.makeServicesMdName(publicName)
       let mdHandle = await window.safeMutableData.newPublic(this.appHandle(), servicesName, SN_TAGTYPE_SERVICES)
       if (await this.mutableDataExists(mdHandle)) {
-        safeWebLog('Look up SUCCESS for MD XOR name: ' + servicesName)
+        var enc = new TextDecoder()
+        safeWebLog('Look up SUCCESS for MD XOR name: ' + enc.decode(new Uint8Array(servicesName)))
         return mdHandle
       }
       throw new Error("services Mutable Data not found for public name '" + publicName + "'")
     } catch (err) {
-      safeWebLog('Look up FAILED for MD XOR name: ' + await this.makeServicesMdName(publicName))
+      var enc = new TextDecoder()
+      safeWebLog('Look up FAILED for MD XOR name: ' + enc.decode(new Uint8Array(await this.makeServicesMdName(publicName))))
       safeWebLog('getServicesMdFor ERROR: ', err)
       throw err
     }
@@ -716,7 +744,7 @@ class SafenetworkWebApi {
         return this._activeServices.get(host)
       } // Already initialised
 
-      // Lookup the service on this host: profile.public-name
+      // Look up the service on this host: profile.public-name
       let uriProfile = host.split('.')[0]
       let publicName = host.split('.')[1]
       if (publicName === undefined) {
@@ -891,14 +919,29 @@ class SafenetworkWebApi {
   //
   // @returns see window.fetch() and your services specification
   async _fetch (docUri, options) {
-    safeWebLog('%s.fetch(%s,%o)', this.constructor.name, docUri, options)
-    let service = await this.getServiceForUri(docUri)
-    if (service) {
-      let handler = service.getHandler(options.method)
-      return handler.call(service, docUri, options)
-    } else {
-      return this.safeApp().webFetch(docUri, options)
+    safeWebLog('%s._fetch(%s,%o)', this.constructor.name, docUri, options)
+
+    let response
+    try {
+      let service = await this.getServiceForUri(docUri)
+
+      if (service) {
+        let handler = service.getHandler(options.method)
+        response = handler.call(service, docUri, options)
+      }
+    } catch (err) {}
+
+    if (!response) {
+      safeWebLog('%s._fetch() - no service available, defaulting to webFetch()...', this.constructor.name)
+
+      try {
+        response = await window.safeApp.webFetch(this.appHandle(), docUri, options)
+      } catch (err) {
+        response = new Response(null,{status: 404, statusText: '404 Not Found'})
+      }
     }
+
+    return response
   }
 
   // //// TODO debugging helpers (to remove):
@@ -1004,8 +1047,8 @@ class SafenetworkWebApi {
 
   async listContainer (containerName) {
     safeWebLog('listContainer(%s)...', containerName)
-    let mdHandle = await window.safeApp.getContainer(this.appHandle(), containerName)
     safeWebLog(containerName + ' ----------- start ----------------')
+    let mdHandle = await window.safeApp.getContainer(this.appHandle(), containerName)
     await this.listMd(mdHandle)
     safeWebLog(containerName + '------------ end -----------------')
   }
@@ -1075,7 +1118,7 @@ class ServiceInterface {
 
     // Default handler when service does not provide one
     return async function () {
-      return new Response({}, {ok: false, status: 405, statusText: '405 Method Not Allowed'})
+      return new Response(null,{}, {ok: false, status: 405, statusText: '405 Method Not Allowed'})
     }
   }
 
@@ -1211,8 +1254,8 @@ TODO
   //
   // @returns see window.fetch() and your services specification
   async _fetch () {
-    safeWebLog('%s._fetch(%o) calling window.webFetch()', this.constructor.name, arguments)
-    return window.webFetch.apply(null, arguments)
+    safeWebLog('%s._fetch(%o) calling window.safeApp.webFetch()', this.constructor.name, arguments)
+    return window.safeApp.webFetch.apply(null, this.appHandle(), arguments)
   }
 }
 
@@ -1253,7 +1296,7 @@ class SafeServiceLDP extends ServiceInterface {
 
       // SAFE Network Service Identity
       // - only change this to implementing a new service
-      idString: 'ldp', // Uses:
+      idString: SN_SERVICEID_LDP, // Uses:
                         // to direct URI to service (e.g. safe://ldp.somesite)
                         // identify service in _publicNames (e.g. happybeing@ldp)
 
@@ -1420,10 +1463,10 @@ class SafeServiceLDP extends ServiceInterface {
         if (response.statusCode >= 200 && response.statusCode < 300) {
           let fileInfo = await this._getFileInfo(path)
           var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
-          return new Response({}, {statusCode: 200, 'contentType': contentType, revision: etagWithoutQuotes})
+          return new Response(null,{}, {statusCode: 200, 'contentType': contentType, revision: etagWithoutQuotes})
         } else if (response.statusCode === 412) {   // Precondition failed
           safeWebLog('putDone(...) conflict - resolving with statusCode 412')
-          return new Response({}, {statusCode: 412, revision: 'conflict'})
+          return new Response(null,{}, {statusCode: 412, revision: 'conflict'})
         } else {
           throw new Error('PUT failed with status ' + response.statusCode + ' (' + response.responseText + ')')
         }
@@ -1475,12 +1518,12 @@ class SafeServiceLDP extends ServiceInterface {
       let fileInfo = await this._getFileInfo(docPath)
       if (!fileInfo) {
         // Resource doesn't exist
-        return new Response({statusCode: 404, responseText: '404 Not Found'})
+        return new Response(null,{statusCode: 404, responseText: '404 Not Found'})
       }
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
       if (ENABLE_ETAGS && options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
-        return new Response({}, {statusCode: 412, revision: etagWithoutQuotes})
+        return new Response(null,{}, {statusCode: 412, revision: etagWithoutQuotes})
       }
 
       if (!isFolder(docPath)) {
@@ -1490,13 +1533,13 @@ class SafeServiceLDP extends ServiceInterface {
         safeWebLog('                 param containerVersion: ' + fileInfo.containerVersion)
         await window.safeNfs.delete(this.storageNfs(), docPath, fileInfo.version + 1)
         this._fileInfoCache.delete(docPath)
-        return new Response({statusCode: 204, responseText: '204 No Content'})
+        return new Response(null,{statusCode: 204, responseText: '204 No Content'})
       }
     } catch (err) {
       safeWebLog('%s.delete() failed: %s', err)
       this._fileInfoCache.delete(docPath)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response({}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1506,12 +1549,12 @@ class SafeServiceLDP extends ServiceInterface {
 
   async _fakeCreateContainer (path, options) {
     safeWebLog('fakeCreateContainer(%s,{%o})...')
-    return new Response({ok: true, status: 201, statusText: '201 Created'})
+    return new Response(null,{ok: true, status: 201, statusText: '201 Created'})
   }
 
   async _fakeDeleteContainer (path, options) {
     safeWebLog('fakeDeleteContainer(%s,{%o})...')
-    return new Response({statusCode: 204, responseText: '204 No Content'})
+    return new Response(null,{statusCode: 204, responseText: '204 No Content'})
   }
 
   // TODO the remaining helpers should probably be re-written just for LDP because
@@ -1537,7 +1580,7 @@ class SafeServiceLDP extends ServiceInterface {
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
       if (options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
-        return new Response({statusCode: 412, statusText: '412 Precondition Failed', revision: etagWithoutQuotes})
+        return new Response(null,{statusCode: 412, statusText: '412 Precondition Failed', revision: etagWithoutQuotes})
       }
 
       // Only act on files (directories are inferred so no need to create)
@@ -1566,7 +1609,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to update file \'%s\' : %s', fullPath, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response({}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1588,7 +1631,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to create file \'%s\' : %s', fullPath, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response({}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1597,14 +1640,14 @@ class SafeServiceLDP extends ServiceInterface {
     safeWebLog('%s._getFile(%s,%O)', this.constructor.name, fullPath, options)
     try {
       if (!this.isConnected()) {
-        return new Response({statusCode: 503, responseText: '503 not connected to SAFE network'})
+        return new Response(null,{statusCode: 503, responseText: '503 not connected to SAFE network'})
       }
 
       // Check if file exists by obtaining directory listing if not already cached
       let fileInfo = await this._getFileInfo(fullPath)
       if (!fileInfo) {
         // TODO does the response object automatically create responseText?
-        return new Response({statusCode: 404})
+        return new Response(null,{statusCode: 404})
       }
 
       // TODO If the options are being used to retrieve specific version
@@ -1614,7 +1657,7 @@ class SafeServiceLDP extends ServiceInterface {
       // Request is for changed file, so if eTag matches return "304 Not Modified"
       if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
         // TODO does the response object automatically create responseText?
-        return new Response({statusCode: 304})
+        return new Response(null,{statusCode: 304})
       }
 
       let fileHandle = await window.safeNfs.fetch(this.storageNfs(), fullPath)
@@ -1637,7 +1680,7 @@ class SafeServiceLDP extends ServiceInterface {
       //   safeWebLog('..file-metadata: ' + fileMetadata);
       // }
 
-      let retResponse = new Response({
+      let retResponse = new Response(null,{
         statusCode: 200,
         body: data,
         // TODO look into this:
@@ -1653,7 +1696,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to get file: %s', err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response({}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1782,7 +1825,7 @@ class SafeServiceLDP extends ServiceInterface {
       safeWebLog('Iteration finished')
       safeWebLog('%s._getFolder(\'%s\', ...) RESULT: listing contains %s', fullPath, JSON.stringify(listing), this.constructor.name)
       var folderMetadata = {contentType: RS_DIR_MIME_TYPE}        // mrhTODOx - check what is expected and whether we can provide something
-      return new Response({statusCode: 200, body: listing, meta: folderMetadata, contentType: RS_DIR_MIME_TYPE /*, mrhTODOx revision: folderETagWithoutQuotes */})
+      return new Response(null,{statusCode: 200, body: listing, meta: folderMetadata, contentType: RS_DIR_MIME_TYPE /*, mrhTODOx revision: folderETagWithoutQuotes */})
     } catch (err) {
       safeWebLog('safeNfs.getEntries(\'%s\') failed: %s', fullPath, err.status)
       // var status = (err === 'Unauthorized' ? 401 : 404); // mrhTODO
@@ -1799,7 +1842,7 @@ class SafeServiceLDP extends ServiceInterface {
           return resolve({statusCode: 401}); // mrhTODO should this reject
         }
       } */
-      return new Response({statusCode: err.status})
+      return new Response(null,{statusCode: err.status})
     }
   }
 
@@ -1880,6 +1923,16 @@ module.exports.setSafeApi = SafenetworkWebApi.prototype.setSafeApi.bind(safeWeb)
 module.exports.listContainer = SafenetworkWebApi.prototype.listContainer.bind(safeWeb)
 module.exports.testsNoAuth = SafenetworkWebApi.prototype.testsNoAuth.bind(safeWeb)
 module.exports.testsAfterAuth = SafenetworkWebApi.prototype.testsAfterAuth.bind(safeWeb)
+
+module.exports.isFolder = safeUtils.isFolder
+module.exports.docpart = safeUtils.docpart
+module.exports.pathpart = safeUtils.pathpart
+module.exports.hostpart = safeUtils.hostpart
+module.exports.protocol = safeUtils.protocol
+module.exports.parentPath = safeUtils.parentPath
+
+module.exports.SN_TAGTYPE_LDP = SN_TAGTYPE_LDP
+module.exports.SN_SERVICEID_LDP = SN_SERVICEID_LDP
 
 // Create and export LDP service for Solid apps:
 //
