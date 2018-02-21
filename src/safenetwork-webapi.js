@@ -83,6 +83,18 @@ const pathpart = safeUtils.pathpart
 const hostpart = safeUtils.hostpart
 const protocol = safeUtils.protocol
 const parentPath = safeUtils.parentPath
+const addLink = safeUtils.addLink
+const addLinks = safeUtils.addLinks
+const Metadata = safeUtils.Metadata
+// TODO change my code and these utils to use these npm libs:
+const S = safeUtils.string
+const path = safeUtils.path
+const url = safeUtils.url
+const getFullUri = safeUtils.getFullUri
+const pathBasename = safeUtils.pathBasename
+const hasSuffix = safeUtils.hasSuffix
+const filenameToBaseUri = safeUtils.filenameToBaseUri
+const getBaseUri = safeUtils.getBaseUri
 /* eslint-enable */
 
 /*
@@ -529,6 +541,9 @@ class SafenetworkWebApi {
       let servicesMdName = await this.makeServicesMdName(publicName)
       let servicesMd = await window.safeMutableData.newPublic(this.appHandle(), servicesMdName, SN_TAGTYPE_SERVICES)
 
+      var enc = new TextDecoder()
+      safeWebLog('DEBUG created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)))
+
       let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
 // TODO NEXT...
       // TODO review this with Web Hosting Manager (separate into a make or init servicesMd function)
@@ -548,7 +563,7 @@ class SafenetworkWebApi {
 
       // TODO remove (test only):
       let r = await window.safeMutableData.getNameAndTag(servicesMd)
-      safeWebLog('New Public servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
+      safeWebLog('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name, ' (%s)', enc.decode(new Uint8Array(r.name)))
 
       let publicNamesMd = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
       let entryKey = this.makePublicNamesEntryKey(publicName)
@@ -560,9 +575,15 @@ class SafenetworkWebApi {
 
       // TODO remove (test only):
       r = await window.safeMutableData.getNameAndTag(servicesMd)
-      safeWebLog('New Public servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
+      safeWebLog('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
 
-      safeWebLog('New _publicNames entry created for %s', publicName)
+      safeWebLog('DEBUG _publicNames entry created for %s', publicName)
+
+      safeWebLog('DEBUG servicesMd for public name \'%s\' contains...', publicName)
+      await this.listMd(servicesMd)
+      safeWebLog('DEBUG _publicNames MD contains...')
+      await this.listMd(publicNamesMd)
+
       return {
         key: entryKey,
         value: servicesMdName,
@@ -757,7 +778,7 @@ class SafenetworkWebApi {
       let servicesMd = await this.getServicesMdFor(publicName)
       let entriesHandle = await window.safeMutableData.getEntries(servicesMd)
       safeWebLog("checking servicesMd entries for host '%s'", host)
-      await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
+      let hostedService = await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
         safeWebLog('Key: ', k.toString())
         safeWebLog('Value: ', v.buf.toString())
         safeWebLog('Version: ', v.version)
@@ -769,15 +790,15 @@ class SafenetworkWebApi {
           serviceProfile = ''
         }
 
-        let serviceValue = v.buf.toString()
+        let serviceValue = v
         safeWebLog("checking: serviceProfile '%s' has serviceId '%s'", serviceProfile, serviceId)
         if (serviceProfile === uriProfile) {
           let serviceFound = this._availableServices.get(serviceId)
           if (serviceFound) {
             // Use the installed service to enable the service on this host
-            let hostedService = await serviceFound.makeServiceInstance(host, serviceValue)
-            this.setActiveService(host, hostedService) // Cache the instance for subsequent uses
-            return hostedService
+            let newHostedService = await serviceFound.makeServiceInstance(host, serviceValue)
+            this.setActiveService(host, newHostedService) // Cache the instance for subsequent uses
+            return newHostedService
           } else {
             let errMsg = "WARNING service '" + serviceId + "' is setup on '" + host + "' but no implementation is available"
             throw new Error(errMsg)
@@ -785,8 +806,11 @@ class SafenetworkWebApi {
         }
       })
 
-      safeWebLog("WARNING no service setup for host '" + host + "'")
-      return null
+      if (!hostedService) {
+        safeWebLog("WARNING no service setup for host '" + host + "'")
+        hostedService = null
+      }
+      return hostedService
     } catch (err) {
       safeWebLog('getServiceForUri(%s) FAILED: %s', uri, err)
       throw (err)
@@ -937,7 +961,7 @@ class SafenetworkWebApi {
       try {
         response = await window.safeApp.webFetch(this.appHandle(), docUri, options)
       } catch (err) {
-        response = new Response(null,{status: 404, statusText: '404 Not Found'})
+        response = new Response(null, {status: 404, statusText: '404 Not Found'})
       }
     }
 
@@ -1104,7 +1128,7 @@ class ServiceInterface {
   freeHandles () {}
 
   safeWeb () { return this._safeWeb }
-
+  appHandle () { return this._safeWeb.appHandle() }
   getName () { return this.getServiceConfig().friendlyName }
   getDescription () { return this.getServiceConfig().description }
   getIdString () { return this.getServiceConfig().idString }
@@ -1118,7 +1142,7 @@ class ServiceInterface {
 
     // Default handler when service does not provide one
     return async function () {
-      return new Response(null,{}, {ok: false, status: 405, statusText: '405 Method Not Allowed'})
+      return new Response(null, {ok: false, status: 405, statusText: '405 Method Not Allowed'})
     }
   }
 
@@ -1279,6 +1303,9 @@ class SafeServiceLDP extends ServiceInterface {
   constructor (safeWeb) {
     super(safeWeb)
 
+    // TODO: info expires after 5 minutes (is this a good idea?)
+    this._fileInfoCache = new safeUtils.Cache(60 * 5 * 1000)
+
     // Service configuration (maps to a SAFE API Service)
     this._serviceConfig = {
 
@@ -1302,6 +1329,17 @@ class SafeServiceLDP extends ServiceInterface {
 
       tagType: SN_TAGTYPE_LDP  // Mutable data tag type (don't change!)
     }
+
+    // LDP config, from node-solid-server/lib/ldp.js
+    // TODO review usefulness - e.g. can we make use of .acl and .meta files?
+    // TODO but note that we may be required to return link headers for these
+    if (!this.suffixAcl) {
+      this.suffixAcl = '.acl'
+    }
+    if (!this.suffixMeta) {
+      this.suffixMeta = '.meta'
+    }
+    this.turtleExtensions = [ '.ttl', this.suffixAcl, this.suffixMeta ]
 
     // Provide a handler for each supported fetch() request method ('GET', 'PUT' etc)
     //
@@ -1413,8 +1451,14 @@ class SafeServiceLDP extends ServiceInterface {
 
     safeWebLog('storageMd()')
     try {
+      let enc = new TextDecoder
+      safeWebLog('DEBUG getting storageMd, serviceValue: %s...', enc.decode(this.getServiceValue().buf))
+
       // The service value is the address of the storage container (Mutable Data)
-      this._storageMd = window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue(), this.getTagType())
+      this._storageMd = window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue().buf, this.getTagType())
+      // TODO validity check:
+      safeWebLog('DEBUG check _storageMd exists, serviceValue: %s...', enc.decode(this.getServiceValue().buf))
+      await window.safeMutableData.getVersion(await this._storageMd)
       return this._storageMd
     } catch (err) {
       safeWebLog('Unable to access Mutable Data for %s service: %s', this.getName(), err)
@@ -1447,6 +1491,25 @@ class SafeServiceLDP extends ServiceInterface {
     }
   }
 
+  async addHeaderLinks (docUri, options, res) {
+    let fileMetadata = new Metadata()
+    if (S(docUri).endsWith('/')) {
+      fileMetadata.isContainer = true
+      fileMetadata.isBasicContainer = true
+    } else {
+      fileMetadata.isResource = true
+    }
+
+    if (fileMetadata.isContainer && options.method === 'OPTIONS') {
+      res.header('Accept-Post', '*/*')
+    }
+    // Add ACL and Meta Link in header
+    addLink(res, safeUtils.pathBasename(docUri) + this.suffixAcl, 'acl')
+    addLink(res, safeUtils.pathBasename(docUri) + this.suffixMeta, 'describedBy')
+    // Add other Link headers
+    addLinks(res, fileMetadata)
+  }
+
   async put (docUri, options) {
     safeWebLog('%s.put(%s,%O)', this.constructor.name, docUri, options)
     let path = pathpart(docUri)
@@ -1455,20 +1518,29 @@ class SafeServiceLDP extends ServiceInterface {
     let contentType = options.contentType
 
     // TODO Refactor to get rid of putDone...
-    const putDone = async (response) => {
-      safeWebLog('%s.put putDone(statusCode: ' + response.statusCode + ') for path: %s', this.constructor.name, path)
-
+    const putDone = async (docUri, opotions, response) => {
       try {
-        // mrhTODO response.statusCode checks for versions are untested
-        if (response.statusCode >= 200 && response.statusCode < 300) {
+        // mrhTODO response.status checks for versions are untested
+        safeWebLog('%s.put putDone(status: ' + response.status + ') for path: %s', this.constructor.name, path)
+        if (response.status >= 200 && response.status < 300) {
           let fileInfo = await this._getFileInfo(path)
           var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
-          return new Response(null,{}, {statusCode: 200, 'contentType': contentType, revision: etagWithoutQuotes})
-        } else if (response.statusCode === 412) {   // Precondition failed
-          safeWebLog('putDone(...) conflict - resolving with statusCode 412')
-          return new Response(null,{}, {statusCode: 412, revision: 'conflict'})
+          let res = new Response(null,
+            {status: 200,
+              headers: new Headers({
+                Location: docUri,
+                'contentType':
+                contentType,
+                revision: etagWithoutQuotes
+              })
+            })
+          this.addHeaderLinks(docUri, res)
+          return res
+        } else if (response.status === 412) {   // Precondition failed
+          safeWebLog('putDone(...) conflict - resolving with status 412')
+          return new Response(null, {status: 412, revision: 'conflict'})
         } else {
-          throw new Error('PUT failed with status ' + response.statusCode + ' (' + response.responseText + ')')
+          throw new Error('PUT failed with status ' + response.status + ' (' + response.responseText + ')')
         }
       } catch (err) {
         safeWebLog('putDone() failed: ' + err)
@@ -1480,13 +1552,13 @@ class SafeServiceLDP extends ServiceInterface {
       let fileInfo = await this._getFileInfo(path)
       if (fileInfo) {
         if (options && (options.ifNoneMatch === '*')) {
-          return putDone({ statusCode: 412 })    // Precondition failed
+          return putDone(docUri, options, { status: 412 })    // Precondition failed
                                                   // (because entity exists,
                                                   // version irrelevant)
         }
-        return putDone(this._updateFile(path, body, contentType, options))
+        return putDone(docUri, options, await this._updateFile(path, body, contentType, options))
       } else {
-        return putDone(this._createFile(path, body, contentType, options))
+        return putDone(docUri, options, await this._createFile(path, body, contentType, options))
       }
     } catch (err) {
       safeWebLog('put failed: %s', err)
@@ -1518,28 +1590,28 @@ class SafeServiceLDP extends ServiceInterface {
       let fileInfo = await this._getFileInfo(docPath)
       if (!fileInfo) {
         // Resource doesn't exist
-        return new Response(null,{statusCode: 404, responseText: '404 Not Found'})
+        return new Response(null, {status: 404, responseText: '404 Not Found'})
       }
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
       if (ENABLE_ETAGS && options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
-        return new Response(null,{}, {statusCode: 412, revision: etagWithoutQuotes})
+        return new Response(null, {status: 412, revision: etagWithoutQuotes})
       }
 
       if (!isFolder(docPath)) {
-        safeWebLog('safeNfs.delete() param this.storageNfs(): ' + this.storageNfs())
+        safeWebLog('safeNfs.delete() param this.storageNfs(): ' + await this.storageNfs())
         safeWebLog('                 param path: ' + docPath)
         safeWebLog('                 param version: ' + fileInfo.version)
         safeWebLog('                 param containerVersion: ' + fileInfo.containerVersion)
-        await window.safeNfs.delete(this.storageNfs(), docPath, fileInfo.version + 1)
+        await window.safeNfs.delete(await this.storageNfs(), docPath, fileInfo.version + 1)
         this._fileInfoCache.delete(docPath)
-        return new Response(null,{statusCode: 204, responseText: '204 No Content'})
+        return new Response(null, {status: 204, responseText: '204 No Content'})
       }
     } catch (err) {
       safeWebLog('%s.delete() failed: %s', err)
       this._fileInfoCache.delete(docPath)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1549,12 +1621,12 @@ class SafeServiceLDP extends ServiceInterface {
 
   async _fakeCreateContainer (path, options) {
     safeWebLog('fakeCreateContainer(%s,{%o})...')
-    return new Response(null,{ok: true, status: 201, statusText: '201 Created'})
+    return new Response(null, {ok: true, status: 201, statusText: '201 Created'})
   }
 
   async _fakeDeleteContainer (path, options) {
     safeWebLog('fakeDeleteContainer(%s,{%o})...')
-    return new Response(null,{statusCode: 204, responseText: '204 No Content'})
+    return new Response(null, {status: 204, responseText: '204 No Content'})
   }
 
   // TODO the remaining helpers should probably be re-written just for LDP because
@@ -1580,7 +1652,7 @@ class SafeServiceLDP extends ServiceInterface {
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
       if (options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
-        return new Response(null,{statusCode: 412, statusText: '412 Precondition Failed', revision: etagWithoutQuotes})
+        return new Response(null, {status: 412, statusText: '412 Precondition Failed', revision: etagWithoutQuotes})
       }
 
       // Only act on files (directories are inferred so no need to create)
@@ -1589,13 +1661,13 @@ class SafeServiceLDP extends ServiceInterface {
         safeWebLog('WARNING: attempt to update a folder')
       } else {
         // Store content as new immutable data (pointed to by fileHandle)
-        let fileHandle = await window.safeNfs.create(this.storageNfs(), body)
+        let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
         // TODO set file metadata (contentType) - how?
 
         // Add file to directory (by inserting fileHandle into container)
-        fileHandle = await window.safeNfs.update(this.storageNfs(), fileHandle, fullPath, fileInfo.containerVersion + 1)
+        fileHandle = await window.safeNfs.update(await this.storageNfs(), fileHandle, fullPath, fileInfo.containerVersion + 1)
         await this._updateFileInfo(fileHandle, fullPath)
-        var response = { statusCode: (fileHandle ? 200 : 400) }
+        var response = { status: (fileHandle ? 200 : 400) }
         // mrhTODO currently just a response that resolves to truthy (may be exteneded to return status?)
         this.reflectNetworkStatus(true)
 
@@ -1609,7 +1681,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to update file \'%s\' : %s', fullPath, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1619,11 +1691,11 @@ class SafeServiceLDP extends ServiceInterface {
   async _createFile (fullPath, body, contentType, options) {
     safeWebLog('%s._createFile(\'%s\',%O,%o,%O)', this.constructor.name, fullPath, body, contentType, options)
     try {
-      let fileHandle = await window.safeNfs.create(this.storageNfs(), body)
+      let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
       // mrhTODOx set file metadata (contentType) - how?
 
       // Add file to directory (by inserting fileHandle into container)
-      fileHandle = await window.safeNfs.insert(this.storageNfs(), fileHandle, fullPath)
+      fileHandle = await window.safeNfs.insert(await this.storageNfs(), fileHandle, fullPath)
       this._updateFileInfo(fileHandle, fullPath)
 
       // TODO implement LDP POST response https://www.w3.org/TR/ldp-primer/
@@ -1631,7 +1703,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to create file \'%s\' : %s', fullPath, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1640,14 +1712,14 @@ class SafeServiceLDP extends ServiceInterface {
     safeWebLog('%s._getFile(%s,%O)', this.constructor.name, fullPath, options)
     try {
       if (!this.isConnected()) {
-        return new Response(null,{statusCode: 503, responseText: '503 not connected to SAFE network'})
+        return new Response(null, {status: 503, responseText: '503 not connected to SAFE network'})
       }
 
       // Check if file exists by obtaining directory listing if not already cached
       let fileInfo = await this._getFileInfo(fullPath)
       if (!fileInfo) {
         // TODO does the response object automatically create responseText?
-        return new Response(null,{statusCode: 404})
+        return new Response(null, {status: 404})
       }
 
       // TODO If the options are being used to retrieve specific version
@@ -1657,12 +1729,12 @@ class SafeServiceLDP extends ServiceInterface {
       // Request is for changed file, so if eTag matches return "304 Not Modified"
       if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
         // TODO does the response object automatically create responseText?
-        return new Response(null,{statusCode: 304})
+        return new Response(null, {status: 304})
       }
 
-      let fileHandle = await window.safeNfs.fetch(this.storageNfs(), fullPath)
+      let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fullPath)
       safeWebLog('fetched fileHandle: %s', fileHandle.toString())
-      fileHandle = window.safeNfs.open(this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
+      fileHandle = window.safeNfs.open(await this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
       let openHandle = await safeWebLog('safeNfs.open() returns fileHandle: %s', fileHandle.toString())
       let size = window.safeNfsFile.size(openHandle)
       safeWebLog('safeNfsFile.size() returns size: %s', size.toString())
@@ -1680,8 +1752,8 @@ class SafeServiceLDP extends ServiceInterface {
       //   safeWebLog('..file-metadata: ' + fileMetadata);
       // }
 
-      let retResponse = new Response(null,{
-        statusCode: 200,
+      let retResponse = new Response(null, {
+        status: 200,
         body: data,
         // TODO look into this:
         /* body: JSON.stringify(data), */ // TODO Not sure stringify() needed, but without it local copies of nodes differ when loaded from SAFE
@@ -1696,7 +1768,7 @@ class SafeServiceLDP extends ServiceInterface {
     } catch (err) {
       safeWebLog('Unable to get file: %s', err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null,{}, {statusCode: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1746,7 +1818,7 @@ class SafeServiceLDP extends ServiceInterface {
     try {
       // Create listing by enumerating container keys beginning with fullPath
       const directoryEntries = []
-      let entriesHandle = await window.safeMutableData.getEntries(this.storageMd())
+      let entriesHandle = await window.safeMutableData.getEntries(await this.storageMd())
       await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
         // Skip deleted entries
         if (v.buf.length === 0) {
@@ -1804,7 +1876,7 @@ class SafeServiceLDP extends ServiceInterface {
         } else {  // File entry:
           try {
             safeWebLog('DEBUG: window.safeNfs.fetch(\'%s\')...', fileInfo.fullPath)
-            let fileHandle = await window.safeNfs.fetch(this.storageNfs(), fileInfo.fullPath)
+            let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fileInfo.fullPath)
             fileInfo = await this._makeFileInfo(fileHandle, fileInfo, fileInfo.fullPath)
             safeWebLog('file created: %s', fileInfo.created)
             safeWebLog('file modified: %s', fileInfo.modified)
@@ -1825,7 +1897,7 @@ class SafeServiceLDP extends ServiceInterface {
       safeWebLog('Iteration finished')
       safeWebLog('%s._getFolder(\'%s\', ...) RESULT: listing contains %s', fullPath, JSON.stringify(listing), this.constructor.name)
       var folderMetadata = {contentType: RS_DIR_MIME_TYPE}        // mrhTODOx - check what is expected and whether we can provide something
-      return new Response(null,{statusCode: 200, body: listing, meta: folderMetadata, contentType: RS_DIR_MIME_TYPE /*, mrhTODOx revision: folderETagWithoutQuotes */})
+      return new Response(null, {status: 200, body: listing, meta: folderMetadata, contentType: RS_DIR_MIME_TYPE /*, mrhTODOx revision: folderETagWithoutQuotes */})
     } catch (err) {
       safeWebLog('safeNfs.getEntries(\'%s\') failed: %s', fullPath, err.status)
       // var status = (err === 'Unauthorized' ? 401 : 404); // mrhTODO
@@ -1839,10 +1911,10 @@ class SafeServiceLDP extends ServiceInterface {
         // Modelled on how googledrive.js handles expired token
         if (this.connected){
           this.connect();
-          return resolve({statusCode: 401}); // mrhTODO should this reject
+          return resolve({status: 401}); // mrhTODO should this reject
         }
       } */
-      return new Response(null,{statusCode: err.status})
+      return new Response(null, {status: err.status})
     }
   }
 
@@ -1877,7 +1949,7 @@ class SafeServiceLDP extends ServiceInterface {
 
       // Not yet cached or doesn't exist
       // Load parent folder listing update _fileInfoCache.
-      let rootVersion = window.safeMutableData.getVersion(this.storageMd())
+      let rootVersion = window.safeMutableData.getVersion(await this.storageMd())
 
 /* TODO there seems no point calling _getFileInfo on a folder so could just
 let that trigger an error in this function, then fix the call to handle differently
@@ -1902,7 +1974,7 @@ let that trigger an error in this function, then fix the call to handle differen
         return null
       }
     } catch (err) {
-      safeWebLog('_getFileInfo(%s) > safeMutableData.getVersion() FAILED: %s', fullPath, err)
+      safeWebLog('_getFileInfo(%s) FAILED: %s', fullPath, err)
       throw err
     }
   }
