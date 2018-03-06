@@ -5,7 +5,7 @@
  *  - application authorisation and connection to SAFE network
  *  - safe:// URIs for any code using window.fetch()
  *  - creation of SAFE network public names and services
- *  - tentative web service implementations for www, LDP
+ *  - tentative web service implementations for www, Solid
  *  - ability add services or override the default implementations
  *
  * Prerequisites:
@@ -21,7 +21,7 @@
     - git tag safe-v0.03
 [/] revert to an earlier vertion without problems (below)
 [/] fix problems caused by switch from SafenetworkLDP to SafenetworkWebApi:
-  [/] safeWebLog() no longer outputs
+  [/] safeWeb() no longer outputs
   [/] solid-plume no longer behaves (e.g. Login > New Post etc)
 [/] slowly re-instate changes to isolate problems:
     [/] SORTED: issue is with peruse-mock and 'yarn dev'
@@ -29,15 +29,40 @@
 [/] revert back to latest code
 [/] check it now works
 [/] apply standard formatting (most but not all errors fixed)
+[ ] create RDF response to GET container:
+    [/] examine solid-server resonse to Plume get('../posts/')
+    [ ] mimic in _getFolder() to create RDF response
+    [ ] make TODO note to implement this better!
+[ ] add basic response headers (links) for each method:
+    [ ] note solid-plume looks for 'User' and 'Updates-Via' but my PUT omits both
+    (For comprehensive list see node-solid-server/lib/create-app.js)
+    [ ] PUT. [ ] POST. [/] GET/HEAD. [ ] DELETE. [ ] OPTIONS
+[ ] fix warning building solid-safenetwork - may have started when I required rdflib.js
 [ ] test and debug SafenetworkWebAPi and LDP service:
 [ ]   1. test update to container
 [ ]   2. test access to LDP container by owner
 [ ]   3. test access to LDP container by NON-owner (ie while logged out)
+[ ] change LDP to be a web compatible service. This makes all LDP posted data
+    public by default so that www access to a Solid resource will work by default.
+    This is ok for poc and many uses, but not a final solution.
+  [ ] change services entry to use www (name and tag_type)
+  [ ] move all www aspects to class SafeServiceWww (eg www name/tag_type)
+  [ ] change SafeServiceLDP to extend SafeServiceWww
+  [ ] provide app with function SafenetworkWebApi.activateServiceFor(host,serviceName,doSetup)
+      where host is (ldp.solidpoc, or mysolid), serviceName would be 'ldp' and if doSetup is
+      true and the public name or service is not yet set up on host, it will ensure the
+      name is created and the service set up, before activating it.
+  [ ] write up what to aim for in terms of access control (is it just MD or also ID?) and
+      try to come up with a Solid compatible way of implementing this with SAFE functinoality
 [ ] try to use LDP to update a container that is also accessible by www service!
-[ ] fix SAFE API issue with safeNfs.create() and
+[ ] rename LDP to Solid (as I'm following the Solid spec which is based on, not identical to LDP)
+[ ] revise setup to create default containers, see: https://github.com/solid/solid-spec/blob/master/recommendations-server.md
+[ ] review CORS requirements (relevance to SAFE?): https://github.com/solid/solid-spec/blob/master/recommendations-server.md
+[/] fix SAFE API issue with safeNfs.create() and
 see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-string-buffer-arraybuffer-array/1325/23?u=happybeing)
 [ ]   1. update first PoC (write/read block by owner only)
 [ ]   2. create second PoC (which allows me to write blog, others to read it)
+  [ ] may need build of Peruse where webFetch() works on LDP containers not just www
 [ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
 [ ] review ServiceInterface implementations and
 [ ]   1. implement a simple www service
@@ -45,22 +70,34 @@ see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-s
 [ ]   3. consider how to implement a file share / URL shortener as a service
 [ ] thorough linting
 */
+// TODO BUGS:
+//  [ ] publish post shows 404 rather than the post, because app.js fetches a post.url which is different from the saved url (title prefixed with time)
+//  [ ] safeWeb().isConnected() broken because _isConnected always false (Imay be fixed if I use rdflib.js SafenetworkWebApi)
 // TODO test get folder and then convert to proper LDP response
+// TODO encrypte entries (value + key) in _publicNames
+//      -> add encrypt param to get/set key and listMd()
+//      -> see https://github.com/maidsafe/safe_examples/blob/2f06aa65025a417a70cf6e93185dbe5ffcb44b9e/web_hosting_manager/app/safenet_comm/api.js#L715
 // TODO disallow service creation with empty profile for all but www
 // TODO maybe provide methods to enumerate public names & services
 // TODO refactor to eliminate memory leaks (e.g. using 'finally')
 // TODO consider adding other web services (e.g. WebDav)
 // TODO go through todos in the code...
+// TODO FUTURE: decide if I should use
+// TODO express.router() (see node-solid-server) in a revised architecture
 // TODO validate against LDP test suites:
 //  - https://w3c.github.io/ldp-testsuite/
 //  - https://github.com/solid/node-solid-server/tree/master/test/integration
 
-localStorage.debug = 'safe:*'
+localStorage.debug = '*'
 
-const safeWebLog = require('debug')('safe:web')  // Decorated console output
+// Decorated console output
+const debug = require('debug')
+const logApi = require('debug')('safe:web')  // Web API
+const logLdp = require('debug')('safe:ldp')  // LDP service
+const logTest = require('debug')('safe:test')  // Test output
 // TODO remove:
 // oldLog('SUDDENLY oldLog() is %s', 'working!!!!')
-// safeWebLog = function () { console.log.apply(null, arguments) } // While oldLog not working...
+// safeWeb = function () { console.log.apply(null, arguments) } // While oldLog not working...
 
 const SN_TAGTYPE_SERVICES = 15001 // TODO get these from the API CONSTANTS
 const SN_TAGTYPE_WWW = 15002
@@ -72,9 +109,11 @@ const SN_SERVICEID_LDP = 'ldp'
 
 // TODO temporaty settings to review:
 const ENABLE_ETAGS = true       // false disables ifMatch / ifNoneMatch checks
-const RS_DIR_MIME_TYPE = 'application/json; charset=UTF-8'
 
+// Libs
 const safeUtils = require('./safenetwork-utils')
+const mime = require('mime-types')
+const ns = require('solid-namespace')()
 
 /* eslint-disable no-unused-vars */
 const isFolder = safeUtils.isFolder
@@ -132,7 +171,7 @@ const defaultPerms = {
  */
 class SafenetworkWebApi {
   constructor () {
-    safeWebLog('SafenetworkWebApi()')
+    logApi('SafenetworkWebApi()')
     this._availableServices = new Map() // Map of installed services
     this.initialise()
 
@@ -150,7 +189,7 @@ class SafenetworkWebApi {
 
     // DOM API settings and and authorisation status
     this._safeAuthUri = ''
-    this._isConnected = false
+    this._isConnected = true // TODO bugchase (should be set false here)
     this._isAuthorised = false
     this._authOnAccessDenied = false  // Used by simpleAuthorise() and fetch()
 
@@ -206,7 +245,7 @@ class SafenetworkWebApi {
   // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
   //
   async simpleAuthorise (appConfig, appPermissions) {
-    safeWebLog('%s.simpleAuthorise(%O,%O)...', this.constructor.name, appConfig, appPermissions)
+    logApi('%s.simpleAuthorise(%O,%O)...', this.constructor.name, appConfig, appPermissions)
 
     // TODO ??? not sure what I'm thinking here...
     // TODO probably best to have initialise called once at start so can
@@ -219,26 +258,27 @@ class SafenetworkWebApi {
     try {
       tmpAppHandle = await window.safeApp.initialise(appConfig, (newState) => {
           // Callback for network state changes
-        safeWebLog('SafeNetwork state changed to: ', newState)
-        this._isConnected = newState
+        logApi('SafeNetwork state changed to: ', newState)
+        this._isConnected = newState // TODO bugchase
       })
 
-      safeWebLog('SAFEApp instance initialised and appHandle returned: ', tmpAppHandle)
+      this._isConnected = true // TODO to remove (see https://github.com/maidsafe/beaker-plugin-safe-app/issues/123)
+      logApi('SAFEApp instance initialised and appHandle returned: ', tmpAppHandle)
       this.setSafeApi(tmpAppHandle)
       this._safeAppConfig = appConfig
       this._safeAppPermissions = (appPermissions !== undefined ? appPermissions : defaultPerms)
 
       // this.testsNoAuth();  // TODO remove (for test only)
       this._safeAuthUri = await window.safeApp.authorise(tmpAppHandle, this._safeAppPermissions, this._safeAppConfig.options)
-      safeWebLog('SAFEApp was authorised and authUri received: ', this._safeAuthUri)
+      logApi('SAFEApp was authorised and authUri received: ', this._safeAuthUri)
 
       await window.safeApp.connectAuthorised(tmpAppHandle, this._safeAuthUri)
-      safeWebLog('SAFEApp was authorised & a session was created with the SafeNetwork')
+      logApi('SAFEApp was authorised & a session was created with the SafeNetwork')
       this._isAuthorised = true
       this.testsAfterAuth()  // TODO remove (for test only)
       return tmpAppHandle
     } catch (err) {
-      safeWebLog('WARNING: ', err)
+      logApi('WARNING: ', err)
     }
 
     return tmpAppHandle
@@ -264,11 +304,11 @@ class SafenetworkWebApi {
   //
   // @returns a Promise which resolves to a ValueVersion
   async getMutableDataValue (mdHandle, key) {
-    safeWebLog('getMutableDataValue(%s,%s)...', mdHandle, key)
+    logApi('getMutableDataValue(%s,%s)...', mdHandle, key)
     try {
       return await window.safeMutableData.get(mdHandle, key)
     } catch (err) {
-      safeWebLog("getMutableDataValue() WARNING no entry found for key '%s'", key)
+      logApi("getMutableDataValue() WARNING no entry found for key '%s'", key)
       throw err
     }
   }
@@ -289,7 +329,7 @@ class SafenetworkWebApi {
       mustNotExist = true
     }
 
-    safeWebLog('setMutableDataValue(%s,%s,%s,%s)...', mdHandle, key, value, mustNotExist)
+    logApi('setMutableDataValue(%s,%s,%s,%s)...', mdHandle, key, value, mustNotExist)
     let entry = null
     try {
       // Check for an existing entry (before creating services MD)
@@ -309,10 +349,10 @@ class SafenetworkWebApi {
       }
 
       await window.safeMutableData.applyEntriesMutation(mdHandle, mutationHandle)
-      safeWebLog('Mutable Data Entry %s', (mustNotExist ? 'inserted' : 'updated'))
+      logApi('Mutable Data Entry %s', (mustNotExist ? 'inserted' : 'updated'))
       return true
     } catch (err) {
-      safeWebLog('WARNING - unable to set mutable data value: ', err)
+      logApi('WARNING - unable to set mutable data value: ', err)
       throw err
     }
   }
@@ -335,7 +375,7 @@ class SafenetworkWebApi {
   //  - a 'key' of the format: '_publicNames/<public-name>'
   //  - a 'ValueVersion', the value part will be the XOR name of the services entry MD for the public name
   async getPublicNameEntry (publicName) {
-    safeWebLog('getPublicNameEntry(%s)...', publicName)
+    logApi('getPublicNameEntry(%s)...', publicName)
     try {
      // TODO wrap access to some MDs (eg for _publicNames container) in a getter that is passed permissions
      // TODO checks those permissions, gets the MD, and caches the value, or returns it immediately if not null
@@ -347,7 +387,7 @@ class SafenetworkWebApi {
         valueVersion: await window.safeMutableDataEntries.get(entriesHandle, entryKey)
       }
     } catch (err) {
-      safeWebLog('getPublicNameEntry() WARNING no _publicNames entry found for: %s', publicName)
+      logApi('getPublicNameEntry() WARNING no _publicNames entry found for: %s', publicName)
     }
 
     return null
@@ -378,7 +418,7 @@ class SafenetworkWebApi {
   //  - value:        the XOR name of the services MD of the new public name
   //  - serviceValue: the value of the services MD entry for this host (ie [profile.]public-name)
   async createPublicNameAndSetupService (publicName, hostProfile, serviceId) {
-    safeWebLog('createPublicNameAndSetupService(%s,%s,%s)...', publicName, hostProfile, serviceId)
+    logApi('createPublicNameAndSetupService(%s,%s,%s)...', publicName, hostProfile, serviceId)
     let createResult
 
     try {
@@ -423,14 +463,14 @@ class SafenetworkWebApi {
   //  - key:        of the format: '_publicNames/<public-name>'
   //  - value:      the XOR name of the services entry MD for the public name
   async createPublicName (publicName) {
-    safeWebLog('createPublicName(%s)...', publicName)
+    logApi('createPublicName(%s)...', publicName)
     try {
       let createResult = await this._createPublicName(publicName)
       let servicesMd = await createResult.servicesMd
       delete createResult.servicesMd
       window.safeMutableData.free(servicesMd)
     } catch (err) {
-      safeWebLog('Unable to create public name \'' + publicName + '\': ', err)
+      logApi('Unable to create public name \'' + publicName + '\': ', err)
       throw err
     }
   }
@@ -444,7 +484,7 @@ class SafenetworkWebApi {
   //
   // @returns   Promise<NameAndTag>: the name and tag values
   async createPublicContainer (rootContainer, publicName, containerName, mdTagType) {
-    safeWebLog('createPublicContainer(%s,%s,%s,%s)...', rootContainer, publicName, containerName, mdTagType)
+    logApi('createPublicContainer(%s,%s,%s,%s)...', rootContainer, publicName, containerName, mdTagType)
     try {
       // Check the container does not yet exist
       let rootMd = await window.safeApp.getContainer(this.appHandle(), rootContainer)
@@ -477,7 +517,7 @@ class SafenetworkWebApi {
       window.safeMutableData.free(mdHandle)
       return nameAndTag
     } catch (err) {
-      safeWebLog('unable to create public container: ', err)
+      logApi('unable to create public container: ', err)
       throw err
     }
   }
@@ -495,7 +535,7 @@ class SafenetworkWebApi {
   //
   // @returns   the value of the services MD entry for this host (ie [profile.]public-name)
   async setupServiceOnHost (host, serviceId) {
-    safeWebLog('setupServiceServiceOnHost(%s,%s)...', host, serviceId)
+    logApi('setupServiceServiceOnHost(%s,%s)...', host, serviceId)
     let serviceValue
 
     try {
@@ -516,6 +556,7 @@ class SafenetworkWebApi {
 
   // Internal version returns a handle which must be freed by the caller
   //
+  // TODO ensure publicName is valid before attempting (eg lowercase, no illegal chars)
   // @param publicName
   //
   // @returns a Promise which resolves to an object containing the new entry's key, value and handle:
@@ -523,7 +564,7 @@ class SafenetworkWebApi {
   //  - value:      the XOR name of the services entry MD for the public name
   //  - servicesMd: the handle of the newly created services MD
   async _createPublicName (publicName) {
-    safeWebLog('_createPublicName(%s)...', publicName)
+    logApi('_createPublicName(%s)...', publicName)
     try {
       // Check for an existing entry (before creating services MD)
       let entry = null
@@ -542,7 +583,7 @@ class SafenetworkWebApi {
       let servicesMd = await window.safeMutableData.newPublic(this.appHandle(), servicesMdName, SN_TAGTYPE_SERVICES)
 
       var enc = new TextDecoder()
-      safeWebLog('DEBUG created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)))
+      logApi('DEBUG created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)))
 
       let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
 // TODO NEXT...
@@ -563,7 +604,7 @@ class SafenetworkWebApi {
 
       // TODO remove (test only):
       let r = await window.safeMutableData.getNameAndTag(servicesMd)
-      safeWebLog('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name, ' (%s)', enc.decode(new Uint8Array(r.name)))
+      logApi('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name, ' (%s)', enc.decode(new Uint8Array(r.name)))
 
       let publicNamesMd = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
       let entryKey = this.makePublicNamesEntryKey(publicName)
@@ -575,13 +616,13 @@ class SafenetworkWebApi {
 
       // TODO remove (test only):
       r = await window.safeMutableData.getNameAndTag(servicesMd)
-      safeWebLog('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
+      logApi('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
 
-      safeWebLog('DEBUG _publicNames entry created for %s', publicName)
+      logApi('DEBUG _publicNames entry created for %s', publicName)
 
-      safeWebLog('DEBUG servicesMd for public name \'%s\' contains...', publicName)
+      logApi('DEBUG servicesMd for public name \'%s\' contains...', publicName)
       await this.listMd(servicesMd)
-      safeWebLog('DEBUG _publicNames MD contains...')
+      logApi('DEBUG _publicNames MD contains...')
       await this.listMd(publicNamesMd)
 
       return {
@@ -590,7 +631,7 @@ class SafenetworkWebApi {
         'servicesMd': servicesMd
       }
     } catch (err) {
-      safeWebLog('_createPublicName() failed: ', err)
+      logApi('_createPublicName() failed: ', err)
       throw err
     }
   }
@@ -609,6 +650,7 @@ class SafenetworkWebApi {
   //
   // @returns a promise which resolves true if the Mutable Data exists
   async mutableDataExists (mdHandle) {
+    logApi('mutableDataExists(%s)', mdHandle)
     try {
       await window.safeMutableData.getVersion(mdHandle)
       return true
@@ -626,27 +668,26 @@ class SafenetworkWebApi {
   // @returns promise which resolves to the services MD of the given name
   // You should free() the returned handle with window.safeMutableData.free
   async getServicesMdFor (host) {
-    safeWebLog('getServicesMdFor(%s)', host)
+    logApi('getServicesMdFor(%s)', host)
     let publicName = host.split('.')[1]
     try {
       if (publicName === undefined) {
         publicName = host
       }
 
-      safeWebLog("host '%s' has publicName '%s'", host, publicName)
-
+      logApi("host '%s' has publicName '%s'", host, publicName)
       let servicesName = await this.makeServicesMdName(publicName)
       let mdHandle = await window.safeMutableData.newPublic(this.appHandle(), servicesName, SN_TAGTYPE_SERVICES)
       if (await this.mutableDataExists(mdHandle)) {
         var enc = new TextDecoder()
-        safeWebLog('Look up SUCCESS for MD XOR name: ' + enc.decode(new Uint8Array(servicesName)))
+        logApi('Look up SUCCESS for MD XOR name: ' + enc.decode(new Uint8Array(servicesName)))
         return mdHandle
       }
       throw new Error("services Mutable Data not found for public name '" + publicName + "'")
     } catch (err) {
       var enc = new TextDecoder()
-      safeWebLog('Look up FAILED for MD XOR name: ' + enc.decode(new Uint8Array(await this.makeServicesMdName(publicName))))
-      safeWebLog('getServicesMdFor ERROR: ', err)
+      logApi('Look up FAILED for MD XOR name: ' + enc.decode(new Uint8Array(await this.makeServicesMdName(publicName))))
+      logApi('getServicesMdFor ERROR: ', err)
       throw err
     }
   }
@@ -661,32 +702,32 @@ class SafenetworkWebApi {
   // @returns promise which resolves to the services MD of the given name, or null
   // You should free() the returned handle with window.safeMutableData.free
   async getServicesMdFromContainers (host) {
-    safeWebLog('getServicesMdFromContainers(%s)', host)
+    logApi('getServicesMdFromContainers(%s)', host)
     try {
       let publicName = host.split('.')[1]
       if (publicName === undefined) {
         publicName = host
       }
-      safeWebLog("host '%s' has publicName '%s'", host, publicName)
+      logApi("host '%s' has publicName '%s'", host, publicName)
 
       let nameKey = this.makePublicNamesEntryKey(publicName)
       let mdHandle = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
-      safeWebLog('_publicNames ----------- start ----------------')
+      logApi('_publicNames ----------- start ----------------')
       let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
       await window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
-        safeWebLog('Key: ', k.toString())
-        safeWebLog('Value: ', v.buf.toString())
-        safeWebLog('Version: ', v.version)
+        logApi('Key: ', k.toString())
+        logApi('Value: ', v.buf.toString())
+        logApi('Version: ', v.version)
         if (k === nameKey) {
-          safeWebLog('Key: ' + nameKey + '- found')
+          logApi('Key: ' + nameKey + '- found')
           return v.buf
         }
       })
-      safeWebLog('Key: ' + nameKey + '- NOT found')
-      safeWebLog("getServicesMdFromContainers() - WARNING: No _publicNames entry for '%s'", publicName)
+      logApi('Key: ' + nameKey + '- NOT found')
+      logApi("getServicesMdFromContainers() - WARNING: No _publicNames entry for '%s'", publicName)
       return null
     } catch (err) {
-      safeWebLog('getServicesMdFromContainers() ERROR: ', err)
+      logApi('getServicesMdFromContainers() ERROR: ', err)
       throw err
     }
   }
@@ -758,11 +799,12 @@ class SafenetworkWebApi {
   // @param a valid safe:// style URI
   // @returns a promise which evaluates to a service implementation object, or null if no service installed on host
   async getServiceForUri (uri) {
-    safeWebLog('getServiceForUri(%s)...', uri)
+    logApi('getServiceForUri(%s)...', uri)
     try {
       let host = hostpart(uri)
-      if (this._activeServices.get(host) !== undefined) {
-        return this._activeServices.get(host)
+      let service = await this._activeServices.get(host)
+      if (service) {
+        return service
       } // Already initialised
 
       // Look up the service on this host: profile.public-name
@@ -772,16 +814,17 @@ class SafenetworkWebApi {
         publicName = host
         uriProfile = ''
       }
-      safeWebLog("URI has profile '%s' and publicName '%s'", uriProfile, publicName)
+      logApi("URI has profile '%s' and publicName '%s'", uriProfile, publicName)
 
       // Get the services MD for publicName
       let servicesMd = await this.getServicesMdFor(publicName)
       let entriesHandle = await window.safeMutableData.getEntries(servicesMd)
-      safeWebLog("checking servicesMd entries for host '%s'", host)
-      let hostedService = await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
-        safeWebLog('Key: ', k.toString())
-        safeWebLog('Value: ', v.buf.toString())
-        safeWebLog('Version: ', v.version)
+      logApi("checking servicesMd entries for host '%s'", host)
+      this.hostedService = null
+      await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
+        logApi('Key: ', k.toString())
+        logApi('Value: ', v.buf.toString())
+        logApi('Version: ', v.version)
         let serviceKey = k.toString()
         let serviceProfile = serviceKey.split('@')[0]
         let serviceId = serviceKey.split('@')[1]
@@ -791,14 +834,15 @@ class SafenetworkWebApi {
         }
 
         let serviceValue = v
-        safeWebLog("checking: serviceProfile '%s' has serviceId '%s'", serviceProfile, serviceId)
+        logApi("checking: serviceProfile '%s' has serviceId '%s'", serviceProfile, serviceId)
         if (serviceProfile === uriProfile) {
           let serviceFound = this._availableServices.get(serviceId)
           if (serviceFound) {
             // Use the installed service to enable the service on this host
             let newHostedService = await serviceFound.makeServiceInstance(host, serviceValue)
             this.setActiveService(host, newHostedService) // Cache the instance for subsequent uses
-            return newHostedService
+            logApi('Service activated - %s (serviceName: %s, serviceId: %s)', newHostedService.getDescription(), newHostedService.getName(), newHostedService.getIdString())
+            this.hostedService = newHostedService
           } else {
             let errMsg = "WARNING service '" + serviceId + "' is setup on '" + host + "' but no implementation is available"
             throw new Error(errMsg)
@@ -806,14 +850,13 @@ class SafenetworkWebApi {
         }
       })
 
-      if (!hostedService) {
-        safeWebLog("WARNING no service setup for host '" + host + "'")
-        hostedService = null
+      if (!this.hostedService) {
+        logApi("WARNING no service setup for host '" + host + "'")
       }
-      return hostedService
+      return this.hostedService
     } catch (err) {
-      safeWebLog('getServiceForUri(%s) FAILED: %s', uri, err)
-      throw (err)
+      logApi('getServiceForUri(%s) FAILED: %s', uri, err)
+      return null
     } finally {
       // TODO implement memory freeing stuff using 'finally' throughout the code!
     }
@@ -831,11 +874,11 @@ class SafenetworkWebApi {
   //
   // @returns a promise which resolves to an MD handle
   async getMdFromHash (hash, tagType) {
-    safeWebLog('getMdFromHash(%s,%s)...', hash, tagType)
+    logApi('getMdFromHash(%s,%s)...', hash, tagType)
     try {
       return window.safeMutableData.newPublic(this.appHandle(), hash, tagType)
     } catch (err) {
-      safeWebLog('getMdFromHash() ERROR: %s', err)
+      logApi('getMdFromHash() ERROR: %s', err)
       throw err
     }
   }
@@ -850,6 +893,7 @@ class SafenetworkWebApi {
   //
   // @returns the XOR name as a String, for the services MD unique to the given public name
   async makeServicesMdName (publicName) {
+    logApi('makeServicesMdName(%s)', publicName)
     return window.safeCrypto.sha3Hash(this.appHandle(), publicName)
   }
 
@@ -877,6 +921,8 @@ class SafenetworkWebApi {
    */
 
   // Helper to create the key for looking up the service installed on a host
+  //
+  // TODO ensure hostProfile is valid before attempting (eg lowercase, no illegal chars)
   //
   // @param hostProfile prefix of a host address, which is [profile.]public-name
   // @param serviceId
@@ -915,7 +961,7 @@ class SafenetworkWebApi {
   // @returns null if not handled, or a {Promise<Object} on handling a safe: URI
   //
   async fetch (docUri, options) {
-    safeWebLog('%s.fetch(%s,%o)...', this.constructor.name, docUri, options)
+    logApi('%s.fetch(%s,%o)...', this.constructor.name, docUri, options)
     // TODO remove:
 //    return httpFetch(docUri,options) // TESTING so pass through
 
@@ -931,7 +977,7 @@ class SafenetworkWebApi {
           return this._fetch(docUri, options)
         }
       } catch (err) {
-        safeWebLog('WARNING: ' + err)
+        logApi('WARNING: ' + err)
         throw err
       }
     }
@@ -943,24 +989,37 @@ class SafenetworkWebApi {
   //
   // @returns see window.fetch() and your services specification
   async _fetch (docUri, options) {
-    safeWebLog('%s._fetch(%s,%o)', this.constructor.name, docUri, options)
+    logApi('%s._fetch(%s,%o)', this.constructor.name, docUri, options)
 
     let response
     try {
+      debug('safe:_fetch')('1')
       let service = await this.getServiceForUri(docUri)
 
+      debug('safe:_fetch')('2')
       if (service) {
+        debug('safe:_fetch')('3')
+        if (!options.method) {
+          options.method = 'GET'
+        }
         let handler = service.getHandler(options.method)
-        response = handler.call(service, docUri, options)
+        debug('safe:_fetch')('4 handler: %o', handler)
+        response = await handler.call(service, docUri, options)
+        debug('safe:_fetch')('5 response: %O', response)
       }
-    } catch (err) {}
+    } catch (err) {
+      logApi('%s._fetch() error: %s', this.constructor.name, err)
+    }
 
+    debug('safe:_fetch')('6')
     if (!response) {
-      safeWebLog('%s._fetch() - no service available, defaulting to webFetch()...', this.constructor.name)
+      debug('safe:_fetch')('7 response: %O')
+      logApi('%s._fetch() - no service available, defaulting to webFetch()...', this.constructor.name)
 
       try {
         response = await window.safeApp.webFetch(this.appHandle(), docUri, options)
       } catch (err) {
+        logApi('%s._fetch() error: %s', this.constructor.name, err)
         response = new Response(null, {status: 404, statusText: '404 Not Found'})
       }
     }
@@ -971,12 +1030,12 @@ class SafenetworkWebApi {
   // //// TODO debugging helpers (to remove):
 
   testsNoAuth () {
-    safeWebLog('testsNoAuth() called!')
+    logTest('testsNoAuth() called!')
   }
 
   // TODO prototyping only for now:
   async testsAfterAuth () {
-    safeWebLog('>>>>>> T E S T S testsAfterAuth()')
+    logTest('>>>>>> T E S T S testsAfterAuth()')
 
     try {
       await this.listContainer('_public')
@@ -988,30 +1047,30 @@ class SafenetworkWebApi {
       // This requires that the public name of the given host already exists:
 //      this.test_setupServiceOnHost('testname10','ldp')
     } catch (err) {
-      safeWebLog('Error: ', err)
+      logTest('Error: ', err)
     }
   }
 
   async testServiceCreation1 (publicName) {
-    safeWebLog('>>>>>> TEST testServiceCreation1(%s)...', publicName)
+    logTest('>>>>>> TEST testServiceCreation1(%s)...', publicName)
     let name = publicName
 
-    safeWebLog('TEST: create public name')
+    logTest('TEST: create public name')
     let newNameResult = await this.createPublicName(name)
     await this.listContainer('_publicNames')
     let entry = await this.getPublicNameEntry(name)
-    safeWebLog('_publicNames entry for \'%s\':\n   Key: \'%s\'\n   Value: \'%s\'\n   Version: %s', name, entry.key, entry.valueVersion.value, entry.valueVersion.version)
+    logTest('_publicNames entry for \'%s\':\n   Key: \'%s\'\n   Value: \'%s\'\n   Version: %s', name, entry.key, entry.valueVersion.value, entry.valueVersion.version)
     await this.listAvailableServices()
     await this.listHostedServices()
 
-    safeWebLog('TEST: install service on \'%s\'', name)
+    logTest('TEST: install service on \'%s\'', name)
     // Install an LDP service
     let profile = 'ldp'
 //    name = name + '.0'
     let serviceId = 'ldp'
     let servicesMd = await this.getServicesMdFor(name)
     if (servicesMd) {
-      safeWebLog("servicesMd for public name '%s' contains...", name)
+      logTest("servicesMd for public name '%s' contains...", name)
       await this.listMd(servicesMd)
 
       let serviceInterface = await this.getServiceImplementation(serviceId)
@@ -1024,65 +1083,65 @@ class SafenetworkWebApi {
       let hostedService = await serviceInterface.makeServiceInstance(host, serviceValue)
       this.setActiveService(host, hostedService)
 
-      safeWebLog("servicesMd for public name '%s' contains...", name)
+      logTest("servicesMd for public name '%s' contains...", name)
       await this.listMd(servicesMd)
     }
 
     await this.listHostedServices()
 
-    safeWebLog('<<<<<< TEST END')
+    logTest('<<<<<< TEST END')
   }
 
   async test_createPublicNameAndSetupService (publicName, hostProfile, serviceId) {
-    safeWebLog('>>>>>> TEST: createPublicNameAndSetupService(%s,%s,%s)...', publicName, hostProfile, serviceId)
+    logTest('>>>>>> TEST: createPublicNameAndSetupService(%s,%s,%s)...', publicName, hostProfile, serviceId)
     let createResult = await this.createPublicNameAndSetupService(publicName, hostProfile, 'ldp')
-    safeWebLog('test result: %O', createResult)
+    logTest('test result: %O', createResult)
 
     await this.listContainer('_publicNames')
     await this.listContainer('_public')
     await this.listHostedServices()
-    safeWebLog('<<<<<< TEST END')
+    logTest('<<<<<< TEST END')
   }
 
   async test_setupServiceOnHost (host, serviceId) {
-    safeWebLog('>>>>>> TEST setupServiceOnHost(%s,%s)', host, serviceId)
+    logTest('>>>>>> TEST setupServiceOnHost(%s,%s)', host, serviceId)
     let createResult = await this.setupServiceOnHost(host, serviceId)
-    safeWebLog('test result: %O', createResult)
+    logTest('test result: %O', createResult)
 
     await this.listContainer('_publicNames')
     await this.listContainer('_public')
     await this.listHostedServices()
-    safeWebLog('<<<<<< TEST END')
+    logTest('<<<<<< TEST END')
   }
 
   async listAvailableServices () {
-    safeWebLog('listAvailableServices()...')
+    logTest('listAvailableServices()...')
     await this._availableServices.forEach(async (v, k) => {
-      safeWebLog("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
+      logTest("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
     })
   }
 
   async listHostedServices () {
-    safeWebLog('listHostedServices()...')
+    logTest('listHostedServices()...')
     await this._activeServices.forEach(async (v, k) => {
-      safeWebLog("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
+      logTest("%s: '%s' - %s", k, await v.getName(), await v.getDescription())
     })
   }
 
   async listContainer (containerName) {
-    safeWebLog('listContainer(%s)...', containerName)
-    safeWebLog(containerName + ' ----------- start ----------------')
+    logTest('listContainer(%s)...', containerName)
+    logTest(containerName + ' ----------- start ----------------')
     let mdHandle = await window.safeApp.getContainer(this.appHandle(), containerName)
     await this.listMd(mdHandle)
-    safeWebLog(containerName + '------------ end -----------------')
+    logTest(containerName + '------------ end -----------------')
   }
 
   async listMd (mdHandle) {
     let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
     await window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
-      safeWebLog('Key: ', k.toString())
-      safeWebLog('Value: ', v.buf.toString())
-      safeWebLog('Version: ', v.version)
+      logTest('Key: ', k.toString())
+      logTest('Value: ', v.buf.toString())
+      logTest('Version: ', v.version)
     })
   }
   // //// END of debugging helpers
@@ -1141,6 +1200,7 @@ class ServiceInterface {
     }
 
     // Default handler when service does not provide one
+    logApi('WARNING: \'%s\' not implemented for %s service (returning 405)', method, this.getName())
     return async function () {
       return new Response(null, {ok: false, status: 405, statusText: '405 Method Not Allowed'})
     }
@@ -1157,7 +1217,7 @@ class ServiceInterface {
 //
 // @returns a promise which resolves to the services entry value for this service
   async setupServiceForHost (host, servicesMd) {
-    safeWebLog('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
+    logApi('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
     throw new Error('ServiceInterface.setupServiceForHost() not implemented for ' + this.getName() + ' service')
     /* Example:
 TODO
@@ -1171,7 +1231,7 @@ TODO
   //
   // @returns a promise which resolves to a new instance of this service for the given host
   async makeServiceInstance (host, serviceValue) {
-    safeWebLog('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED', this.constructor.name, host, serviceValue)
+    logApi('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED', this.constructor.name, host, serviceValue)
     throw ('%s.makeServiceInstance() not implemented for ' + this.getName() + ' service', this.constructor.name)
     /* Example:
     let hostService = await new this.constructor(this.safeWeb())
@@ -1195,7 +1255,7 @@ TODO
   //
   // @returns see window.fetch() and your services specification
   async _fetch () {
-    safeWebLog('%s._fetch() - NOT YET IMPLEMENTED', this.constructor.name)
+    logApi('%s._fetch() - NOT YET IMPLEMENTED', this.constructor.name)
     throw new Error('ServiceInterface._fetch() not implemented for ' + this.getName() + ' service')
   }
 };
@@ -1246,7 +1306,7 @@ class SafeServiceWww extends ServiceInterface {
     // and so a www service must be set up using another application such as
     // the Maidsafe Web Hosting Manager example. This can't be done here
     // because the user must specify a name for a public container.
-    safeWebLog('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
+    logApi('%s.setupServiceForHost(%s,%o) - NOT YET IMPLEMENTED', host, this.constructor.name, servicesMd)
     throw ('%s.setupServiceForHost() not implemented for ' + this.getName() + ' service', this.constructor.name)
 
     /* Example:
@@ -1261,7 +1321,7 @@ TODO
   //
   // @returns a promise which resolves to a new instance of this service for the given host
   async makeServiceInstance (host, serviceValue) {
-    safeWebLog('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED', this.constructor.name, host, serviceValue)
+    logApi('%s.makeServiceInstance(%s,%s) - NOT YET IMPLEMENTED', this.constructor.name, host, serviceValue)
     throw ('%s.makeServiceInstance() not implemented for ' + this.getName() + ' service', this.constructor.name)
     /* Example:
     let hostService = await new this.constructor(this.safeWeb())
@@ -1278,7 +1338,7 @@ TODO
   //
   // @returns see window.fetch() and your services specification
   async _fetch () {
-    safeWebLog('%s._fetch(%o) calling window.safeApp.webFetch()', this.constructor.name, arguments)
+    logApi('%s._fetch(%o) calling window.safeApp.webFetch()', this.constructor.name, arguments)
     return window.safeApp.webFetch.apply(null, this.appHandle(), arguments)
   }
 }
@@ -1299,6 +1359,10 @@ TODO
  *  Linked Data Platform Primer (http://www.w3.org/TR/2015/NOTE-ldp-primer-20150423/)
  *  HTTP/1.1 Status Code Definitions (https://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html)
  */
+
+// rdflib is separated because it is only needed for the Solid service (for $rdf.graph())
+const $rdf = require('rdflib')
+
 class SafeServiceLDP extends ServiceInterface {
   constructor (safeWeb) {
     super(safeWeb)
@@ -1312,7 +1376,7 @@ class SafeServiceLDP extends ServiceInterface {
       // UI - to help identify the service in user interface
       //    - don't match with these in code (use the idString or tagType)
       friendlyName: 'LDP',
-      description: 'LinkedData Platform (http://www.w3.org/TR/ldp/)',
+      description: 'LinkedData Platform (ref http://www.w3.org/TR/ldp/)',
 
       // Service Setup - configures behaviour of setupServiceForHost()
       setupDefaults: {
@@ -1328,11 +1392,26 @@ class SafeServiceLDP extends ServiceInterface {
                         // identify service in _publicNames (e.g. happybeing@ldp)
 
       tagType: SN_TAGTYPE_LDP  // Mutable data tag type (don't change!)
+
     }
 
-    // LDP config, from node-solid-server/lib/ldp.js
-    // TODO review usefulness - e.g. can we make use of .acl and .meta files?
-    // TODO but note that we may be required to return link headers for these
+    // LDP config from node-solid-server/lib/ldp.js
+
+    // TODO not sure where to put this and if to export?
+    const DEFAULT_CONTENT_TYPE = 'text/turtle'
+    const RDF_MIME_TYPES = [
+      'text/turtle',            // .ttl
+      'text/n3',                // .n3
+      'text/html',              // RDFa
+      'application/xhtml+xml',  // RDFa
+      'application/n3',
+      'application/nquads',
+      'application/n-quads',
+      'application/rdf+xml',    // .rdf
+      'application/ld+json',    // .jsonld
+      'application/x-turtle'
+    ]
+
     if (!this.suffixAcl) {
       this.suffixAcl = '.acl'
     }
@@ -1345,6 +1424,7 @@ class SafeServiceLDP extends ServiceInterface {
     //
     // Each handler is a function with same parameters and return as window.fetch()
     this.setHandler('GET', this.get)
+    this.setHandler('HEAD', this.get)
     this.setHandler('PUT', this.put)
     this.setHandler('POST', this.post)
     this.setHandler('DELETE', this.delete)
@@ -1375,7 +1455,7 @@ class SafeServiceLDP extends ServiceInterface {
   // @returns a promise which resolves to the services entry value for this service
   // TODO move this to the super class - many implementations will be able to just change setupConfig
   async setupServiceForHost (host, servicesMd) {
-    safeWebLog('%s.setupServiceForHost(%s,%o)', this.constructor.name, host, servicesMd)
+    logLdp('%s.setupServiceForHost(%s,%o)', this.constructor.name, host, servicesMd)
     let uriProfile = host.split('.')[0]
     let publicName = host.split('.')[1]
     if (publicName === undefined) {
@@ -1393,7 +1473,7 @@ class SafeServiceLDP extends ServiceInterface {
       serviceValue = nameAndTag.name.buffer
       await this.safeWeb().setMutableDataValue(servicesMd, serviceKey, serviceValue)
       // TODO remove this excess DEBUG:
-      safeWebLog('Pubic name \'%s\' services:', publicName)
+      logLdp('Pubic name \'%s\' services:', publicName)
       await this.safeWeb().listMd(servicesMd)
     }
     return serviceValue
@@ -1407,7 +1487,7 @@ class SafeServiceLDP extends ServiceInterface {
   //
   // @returns a promise which resolves to a new instance of this service for the given host
   async makeServiceInstance (host, serviceValue) {
-    safeWebLog('%s.makeServiceInstance(%s,%s)', this.constructor.name, host, serviceValue)
+    logLdp('%s.makeServiceInstance(%s,%s)', this.constructor.name, host, serviceValue)
     let hostService = await new this.constructor(this.safeWeb())
     hostService._host = host
     hostService._serviceConfig = this.getServiceConfig()
@@ -1431,12 +1511,12 @@ class SafeServiceLDP extends ServiceInterface {
   async storageNfs () {
     if (this._storageNfsHandle) { return this._storageNfsHandle }
 
-    safeWebLog('storageNfs()')
+    logLdp('storageNfs()')
     try {
-      this._storageNfsHandle = window.safeMutableData.emulateAs(await this.storageMd(), 'NFS')
+      this._storageNfsHandle = await window.safeMutableData.emulateAs(await this.storageMd(), 'NFS')
       return this._storageNfsHandle
     } catch (err) {
-      safeWebLog('Unable to access NFS storage for %s service: %s', this.getName(), err)
+      logLdp('Unable to access NFS storage for %s service: %s', this.getName(), err)
       throw (err)
     }
   }
@@ -1445,25 +1525,28 @@ class SafeServiceLDP extends ServiceInterface {
   //
   // @returns a promise which resolves to the Mutable Handle
   async storageMd () {
+debug('safe:storageMd')('1')
     if (this._storageMd) {
       return this._storageMd
     }
 
-    safeWebLog('storageMd()')
+    logLdp('storageMd()')
     try {
       let enc = new TextDecoder
-      safeWebLog('DEBUG getting storageMd, serviceValue: %s...', enc.decode(this.getServiceValue().buf))
 
       // The service value is the address of the storage container (Mutable Data)
-      this._storageMd = window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue().buf, this.getTagType())
+debug('safe:storageMd')('2')
+      this._storageMd = await window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue().buf, this.getTagType())
+debug('safe:storageMd')('3')
       // TODO validity check:
-      safeWebLog('DEBUG check _storageMd exists, serviceValue: %s...', enc.decode(this.getServiceValue().buf))
-      await window.safeMutableData.getVersion(await this._storageMd)
+      await window.safeMutableData.getVersion(this._storageMd)
+debug('safe:storageMd')('4')
       return this._storageMd
     } catch (err) {
-      safeWebLog('Unable to access Mutable Data for %s service: %s', this.getName(), err)
+      logLdp('Unable to access Mutable Data for %s service: %s', this.getName(), err)
       throw (err)
     }
+debug('safe:storageMd')('5')
   }
 
   /*
@@ -1475,23 +1558,28 @@ class SafeServiceLDP extends ServiceInterface {
    * a safe: URI
    */
 
+  // Handle both GET and HEAD (which is like GET but does not return a body)
   async get (docUri, options) {
-    safeWebLog('%s.get(%s,%O)', this.constructor.name, docUri, options)
-    let path = pathpart(docUri)
+    options.includeBody = (options.method === 'GET')
+
+    logLdp('%s.get(%s,%O)', this.constructor.name, docUri, options)
 
   /* TODO if get() returns 404 (not found) return empty listing to fake existence of empty container
     if (response.status === 404)
-      safeWebLog('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
+      logLdp('WARNING: SafenetworkLDP::_fetch() may need to return empty listing for non-existant containers')
       return response;
   */
-    if (isFolder(path)) {
-      return this._getFolder(path, options)
+    if (isFolder(docUri)) {
+      return this._getFolder(docUri, options)
     } else {
-      return this._getFile(path, options)
+      return this._getFile(docUri, options)
     }
   }
 
-  async addHeaderLinks (docUri, options, res) {
+  // Add Solid response header links
+  //
+  // See node-solid-server/lib/header.js linksHandler()
+  async addHeaderLinks (docUri, options, headers) {
     let fileMetadata = new Metadata()
     if (S(docUri).endsWith('/')) {
       fileMetadata.isContainer = true
@@ -1501,19 +1589,17 @@ class SafeServiceLDP extends ServiceInterface {
     }
 
     if (fileMetadata.isContainer && options.method === 'OPTIONS') {
-      res.header('Accept-Post', '*/*')
+      headers.header('Accept-Post', '*/*')
     }
     // Add ACL and Meta Link in header
-    addLink(res, safeUtils.pathBasename(docUri) + this.suffixAcl, 'acl')
-    addLink(res, safeUtils.pathBasename(docUri) + this.suffixMeta, 'describedBy')
+    safeUtils.addLink(headers, safeUtils.pathBasename(docUri) + this.suffixAcl, 'acl')
+    safeUtils.addLink(headers, safeUtils.pathBasename(docUri) + this.suffixMeta, 'describedBy')
     // Add other Link headers
-    addLinks(res, fileMetadata)
+    safeUtils.addLinks(headers, fileMetadata)
   }
 
   async put (docUri, options) {
-    safeWebLog('%s.put(%s,%O)', this.constructor.name, docUri, options)
-    let path = pathpart(docUri)
-
+    logLdp('%s.put(%s,%O)', this.constructor.name, docUri, options)
     let body = options.body
     let contentType = options.contentType
 
@@ -1521,76 +1607,72 @@ class SafeServiceLDP extends ServiceInterface {
     const putDone = async (docUri, opotions, response) => {
       try {
         // mrhTODO response.status checks for versions are untested
-        safeWebLog('%s.put putDone(status: ' + response.status + ') for path: %s', this.constructor.name, path)
+        logLdp('%s.put putDone(status: ' + response.status + ') for path: %s', this.constructor.name, docUri)
         if (response.status >= 200 && response.status < 300) {
-          let fileInfo = await this._getFileInfo(path)
+          let fileInfo = await this._getFileInfo(pathpart(docUri))
           var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
           let res = new Response(null,
             {status: 200,
               headers: new Headers({
                 Location: docUri,
-                'contentType':
-                contentType,
-                revision: etagWithoutQuotes
+                'contentType': contentType,
+                revision: etagWithoutQuotes,
+                'MS-Author-Via': 'SPARQL'
               })
             })
-          this.addHeaderLinks(docUri, res)
+          this.addHeaderLinks(docUri, options, res.headers)
           return res
         } else if (response.status === 412) {   // Precondition failed
-          safeWebLog('putDone(...) conflict - resolving with status 412')
+          logLdp('putDone(...) conflict - resolving with status 412')
           return new Response(null, {status: 412, revision: 'conflict'})
         } else {
-          throw new Error('PUT failed with status ' + response.status + ' (' + response.responseText + ')')
+          throw new Error('PUT failed with status ' + response.status + ' (' + response.statusText + ')')
         }
       } catch (err) {
-        safeWebLog('putDone() failed: ' + err)
+        logLdp('putDone() failed: ' + err)
         throw err
       }
     }
 
     try {
-      let fileInfo = await this._getFileInfo(path)
+      let fileInfo = await this._getFileInfo(pathpart(docUri))
       if (fileInfo) {
-        if (options && (options.ifNoneMatch === '*')) {
-          return putDone(docUri, options, { status: 412 })    // Precondition failed
-                                                  // (because entity exists,
-                                                  // version irrelevant)
+        if (options && (options.ifNoneMatch === '*')) { // Entity exists, version irrelevant)
+          return putDone(docUri, options, { status: 412, statusText: 'Precondition failed' })
         }
-        return putDone(docUri, options, await this._updateFile(path, body, contentType, options))
+        return putDone(docUri, options, await this._updateFile(docUri, body, contentType, options))
       } else {
-        return putDone(docUri, options, await this._createFile(path, body, contentType, options))
+        return putDone(docUri, options, await this._createFile(docUri, body, contentType, options))
       }
     } catch (err) {
-      safeWebLog('put failed: %s', err)
+      logLdp('put failed: %s', err)
       throw err
     }
   }
 
   // TODO specialise put/post (RemoteStorage service just has put - so leave til imp RS service)
   async post (docUri, options) {
-    safeWebLog('%s.post(%s,%O)', this.constructor.name, docUri, options)
-    let docPath = pathpart(docUri)
+    logLdp('%s.post(%s,%O)', this.constructor.name, docUri, options)
 
-    if (isFolder(docPath)) {
-      return this._fakeCreateContainer(docPath, options)
+    if (isFolder(docUri)) {
+      return this._fakeCreateContainer(docUri, options)
     }
 
     return this.put(docUri, options)
   }
 
   async delete (docUri, options) {
-    safeWebLog('%s.delete(%s,%O)', this.constructor.name, docUri, options)
-    let docPath = pathpart(docUri)
+    logLdp('%s.delete(%s,%O)', this.constructor.name, docUri, options)
 
-    if (isFolder(docPath)) {
-      return this._fakeDeleteContainer(docPath, options)
+    if (isFolder(docUri)) {
+      return this._fakeDeleteContainer(docUri, options)
     }
 
     try {
-      let fileInfo = await this._getFileInfo(docPath)
+      let fileInfo = await this._getFileInfo(pathpart(docUri))
       if (!fileInfo) {
         // Resource doesn't exist
-        return new Response(null, {status: 404, responseText: '404 Not Found'})
+        return new Response(null, {status: 404, statusText: '404 Not Found'})
       }
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
@@ -1598,20 +1680,20 @@ class SafeServiceLDP extends ServiceInterface {
         return new Response(null, {status: 412, revision: etagWithoutQuotes})
       }
 
-      if (!isFolder(docPath)) {
-        safeWebLog('safeNfs.delete() param this.storageNfs(): ' + await this.storageNfs())
-        safeWebLog('                 param path: ' + docPath)
-        safeWebLog('                 param version: ' + fileInfo.version)
-        safeWebLog('                 param containerVersion: ' + fileInfo.containerVersion)
-        await window.safeNfs.delete(await this.storageNfs(), docPath, fileInfo.version + 1)
-        this._fileInfoCache.delete(docPath)
-        return new Response(null, {status: 204, responseText: '204 No Content'})
+      if (!isFolder(docUri)) {
+        logLdp('safeNfs.delete() param this.storageNfs(): ' + await this.storageNfs())
+        logLdp('                 param path: ' + docUri)
+        logLdp('                 param version: ' + fileInfo.version)
+        logLdp('                 param containerVersion: ' + fileInfo.containerVersion)
+        await window.safeNfs.delete(await this.storageNfs(), docUri, fileInfo.version + 1)
+        this._fileInfoCache.delete(docUri)
+        return new Response(null, {status: 204, statusText: '204 No Content'})
       }
     } catch (err) {
-      safeWebLog('%s.delete() failed: %s', err)
-      this._fileInfoCache.delete(docPath)
+      logLdp('%s.delete() failed: %s', err)
+      this._fileInfoCache.delete(docUri)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
@@ -1619,14 +1701,17 @@ class SafeServiceLDP extends ServiceInterface {
    * Helpers for service handlers
    */
 
+  // TODO review container emulation (create,delete,get)
   async _fakeCreateContainer (path, options) {
-    safeWebLog('fakeCreateContainer(%s,{%o})...')
+    logLdp('fakeCreateContainer(%s,{%o})...')
     return new Response(null, {ok: true, status: 201, statusText: '201 Created'})
   }
 
+  // TODO this should error if the container is not empty, so check this
+  // TODO (check Solid and/or LDP spec)
   async _fakeDeleteContainer (path, options) {
-    safeWebLog('fakeDeleteContainer(%s,{%o})...')
-    return new Response(null, {status: 204, responseText: '204 No Content'})
+    logLdp('fakeDeleteContainer(%s,{%o})...')
+    return new Response(null, {status: 204, statusText: '204 No Content'})
   }
 
   // TODO the remaining helpers should probably be re-written just for LDP because
@@ -1635,8 +1720,10 @@ class SafeServiceLDP extends ServiceInterface {
   // Update file
   //
   // @returns promise which resolves to a Resonse object
-  async _updateFile (fullPath, body, contentType, options) {
-    safeWebLog('%s._updateFile(\'%s\',%O,%o,%O)', this.constructor.name, fullPath, body, contentType, options)
+  async _updateFile (docUri, body, contentType, options) {
+    logLdp('%s._updateFile(\'%s\',%O,%o,%O)', this.constructor.name, docUri, body, contentType, options)
+    let docPath = pathpart(docUri)
+
     try {
       // mrhTODO GoogleDrive only I think:
       // if ((!contentType.match(/charset=/)) &&
@@ -1644,10 +1731,10 @@ class SafeServiceLDP extends ServiceInterface {
       //       contentType += '; charset=binary';
       // }
 
-      let fileInfo = await this._getFileInfo(fullPath)
+      let fileInfo = await this._getFileInfo(docPath)
       if (!fileInfo) {
         // File doesn't exist so create (ref: https://stackoverflow.com/questions/630453
-        return this._createFile(fullPath, body, contentType, options)
+        return this._createFile(docUri, body, contentType, options)
       }
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
@@ -1656,153 +1743,208 @@ class SafeServiceLDP extends ServiceInterface {
       }
 
       // Only act on files (directories are inferred so no need to create)
-      if (isFolder(fullPath)) {
+      if (isFolder(docUri)) {
         // Strictly we shouldn't get here as the caller should test, but in case we do
-        safeWebLog('WARNING: attempt to update a folder')
+        logLdp('WARNING: attempt to update a folder')
       } else {
         // Store content as new immutable data (pointed to by fileHandle)
         let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
         // TODO set file metadata (contentType) - how?
 
         // Add file to directory (by inserting fileHandle into container)
-        fileHandle = await window.safeNfs.update(await this.storageNfs(), fileHandle, fullPath, fileInfo.containerVersion + 1)
-        await this._updateFileInfo(fileHandle, fullPath)
+        fileHandle = await window.safeNfs.update(await this.storageNfs(), fileHandle, docPath, fileInfo.containerVersion + 1)
+        await this._updateFileInfo(fileHandle, docPath)
         var response = { status: (fileHandle ? 200 : 400) }
         // mrhTODO currently just a response that resolves to truthy (may be exteneded to return status?)
         this.reflectNetworkStatus(true)
 
         // TODO Not sure if eTags can still be simulated:
         // TODO would it be better to not delete, but set fileHandle in the fileInfo?
-        this._fileInfoCache.delete(fullPath)     // Invalidate any cached eTag
+        this._fileInfoCache.delete(docPath)     // Invalidate any cached eTag
 
         // TODO implement LDP PUT response https://www.w3.org/TR/ldp-primer/
         return new Response(response)
       }
     } catch (err) {
-      safeWebLog('Unable to update file \'%s\' : %s', fullPath, err)
+      logLdp('Unable to update file \'%s\' : %s', docUri, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
   // Create file
   //
   // @returns promise which resolves to a Resonse object
-  async _createFile (fullPath, body, contentType, options) {
-    safeWebLog('%s._createFile(\'%s\',%O,%o,%O)', this.constructor.name, fullPath, body, contentType, options)
+  // TODO add header links addLinks() - see node-solid-server/lib/handlers/post.js function one ()
+  async _createFile (docUri, body, contentType, options) {
+    logLdp('%s._createFile(\'%s\',%O,%o,%O)', this.constructor.name, docUri, body, contentType, options)
+    let docPath = pathpart(docUri)
+
     try {
       let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
       // mrhTODOx set file metadata (contentType) - how?
 
       // Add file to directory (by inserting fileHandle into container)
-      fileHandle = await window.safeNfs.insert(await this.storageNfs(), fileHandle, fullPath)
-      this._updateFileInfo(fileHandle, fullPath)
+      fileHandle = await window.safeNfs.insert(await this.storageNfs(), fileHandle, docPath)
+      this._updateFileInfo(fileHandle, docPath)
 
       // TODO implement LDP POST response https://www.w3.org/TR/ldp-primer/
-      return new Response()
+      return new Response(null, {status: 200, statusText: 'OK'})
     } catch (err) {
-      safeWebLog('Unable to create file \'%s\' : %s', fullPath, err)
+      logLdp('Unable to create file \'%s\' : %s', docUri, err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
     }
   }
 
-  // For reference see WireClient#get (wireclient.js)
-  async _getFile (fullPath, options) {
-    safeWebLog('%s._getFile(%s,%O)', this.constructor.name, fullPath, options)
+  async DETETETHIS_getFile (fullPath, options) {
+    logLdp('%s._getFile(%s,%O)', this.constructor.name, fullPath, options)
     try {
       if (!this.isConnected()) {
-        return new Response(null, {status: 503, responseText: '503 not connected to SAFE network'})
+        return new Response(null, {status: 503, statusText: '503 not connected to SAFE network'})
       }
 
-      // Check if file exists by obtaining directory listing if not already cached
-      let fileInfo = await this._getFileInfo(fullPath)
+// Check if file exists by obtaining directory listing if not already cached (why do this way?)
+let fileInfo = await this._getFileInfo(fullPath)
       if (!fileInfo) {
-        // TODO does the response object automatically create responseText?
-        return new Response(null, {status: 404})
+        return new Response(null, {status: 404, statusText: '404 File not found'})
       }
 
-      // TODO If the options are being used to retrieve specific version
+      // TODO If the options are being use to retrieve specific version
       // should we get the latest version from the API first?
       var etagWithoutQuotes = fileInfo.ETag
 
       // Request is for changed file, so if eTag matches return "304 Not Modified"
       if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
-        // TODO does the response object automatically create responseText?
+        // TODO does the response object automatically create statusText?
         return new Response(null, {status: 304})
       }
 
-      let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fullPath)
-      safeWebLog('fetched fileHandle: %s', fileHandle.toString())
-      fileHandle = window.safeNfs.open(await this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
-      let openHandle = await safeWebLog('safeNfs.open() returns fileHandle: %s', fileHandle.toString())
-      let size = window.safeNfsFile.size(openHandle)
-      safeWebLog('safeNfsFile.size() returns size: %s', size.toString())
-      let content = await window.safeNfsFile.read(openHandle, 0, size)
-      safeWebLog('%s bytes read from file.', content.byteLength)
-
-      let decoder = new TextDecoder()
-      let data = decoder.decode(content)
-      safeWebLog('data: \'%s\'', data)
-
-      // TODO SAFE API file-metadata - disabled for now:
-      // var fileMetadata = response.getResponseHeader('file-metadata');
-      // if (fileMetadata && fileMetadata.length() > 0){
-      //   fileMetadata = JSON.parse(fileMetadata);
-      //   safeWebLog('..file-metadata: ' + fileMetadata);
-      // }
-
-      let retResponse = new Response(null, {
-        status: 200,
-        body: data,
-        // TODO look into this:
-        /* body: JSON.stringify(data), */ // TODO Not sure stringify() needed, but without it local copies of nodes differ when loaded from SAFE
-                                        // TODO RS ISSUE:  is it a bug that RS#get accepts a string *or an object* for body? Should it only accept a string?
-        revision: etagWithoutQuotes,
-        contentType: 'application/json; charset=UTF-8'   // Fairly safe default until SAFE NFS supports save/get of content type
-      })
-
-      if (fileInfo && fileInfo['Content-Type']) {
-        retResponse.contentType = fileInfo['Content-Type']
-      }
+      return this._getFileContent(fullPath,options)
     } catch (err) {
-      safeWebLog('Unable to get file: %s', err)
+      logLdp('Unable to get file: %s', err)
       // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null, {status: 500, responseText: '500 Internal Server Error (' + err + ')'})
+      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
+    }
+  }
+
+  // get the full content of file stored using safeNfs
+  //
+  // @param fullPath is the path of the file (according to its safeNfs entry key)
+  // @param if options.includeBody is true, the response includes content (data)
+  //
+  // @returns a Promise which resolves to a Response object. On success, the response
+  // will contain file metadata available from the safeNfs fileHandle and a
+  // contentType based on the file extension
+  //
+  // TODO add support for content negotiation see node-solid-server/lib/handlers/get.js
+  // TODO add support for data browser node-solid-server/lib/handlers/get.js
+  async _getFile (docUri, options) {
+    logLdp('%s._getFile(%s,%O)', this.constructor.name, docUri, options)
+    let docPath = pathpart(docUri)
+    let fileInfo = {}
+    let fileHandle
+    let retResponse
+    try {
+      if (!this.safeWeb().isConnected()) {
+        return new Response(null, {status: 503, statusText: '503 not connected to SAFE network'})
+      }
+
+      // TODO If the options are being used to retrieve specific version
+      // should we get the latest version from the API first?
+      try {
+        fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
+        logLdp('fetched fileHandle: %s', fileHandle.toString())
+        fileInfo = await this._makeFileInfo(fileHandle, fileInfo, docPath)
+      } catch (err) {
+        return new Response(null, {status: 404, statusText: '404 File not found'})
+      }
+      logLdp('safeNfs.open() returns handle: %s', fileInfo.openHandle.toString())
+
+      var etagWithoutQuotes = fileInfo.ETag
+      // Request is for changed file, so if eTag matches return "304 Not Modified"
+      if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
+        return new Response(null, {status: 304, statusText: '304 Not Modified'})
+      }
+
+      var contentType = mime.lookup(docPath) || this.DEFAULT_CONTENT_TYPE
+      if (safeUtils.hasSuffix(docPath, this.turtleExtensions)) {
+        contentType = 'text/turtle'
+      }
+
+      let body = null
+      if (options.includeBody) {
+        let content = await window.safeNfsFile.read(fileInfo.openHandle, 0, fileInfo.size)
+        logLdp('%s bytes read from file.', content.byteLength)
+
+        let decoder = new TextDecoder()
+        body = decoder.decode(content)
+        logLdp('body: \'%s\'', body)
+      }
+
+      retResponse = new Response(body, {
+        status: 200,
+        statusText: 'OK',
+        revision: etagWithoutQuotes,
+        // TODO how to get contentType from from metadata?
+        headers: new Headers({
+          'Content-Type': contentType,
+          container: false,
+          'MS-Author-Via': 'SPARQL'
+        })
+      })
+      this.addHeaderLinks(docUri, options, retResponse.headers) // TODO is docUri correct
+      return retResponse
+    } catch (err) {
+      logLdp('Unable to get file: %s', err)
+      // TODO can we decode the SAFE API errors to provide better error responses
+      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
+    } finally {
+      if (fileInfo.openHandle) {
+        window.safeNfsFile.close(fileInfo.openHandle)
+      }
+      if (fileHandle) {
+        window.safeNfs.free(fileHandle)
+      }
     }
   }
 
   // Use fileHandle to insert metadata into given fileInfo
   //
   // returns a Promise which resolves to a fileInfo object
-  async _makeFileInfo (fileHandle, fileInfo, fullPath) {
+  // Note: if the fileInfo object includes an openHandle this should be closed by the caller
+  async _makeFileInfo (fileHandle, fileInfo, docPath) {
     try {
+      debug('safe:_makeFileInfo')('1')
       let fileMetadata = await window.safeNfsFile.metadata(fileHandle)
+      fileInfo.openHandle = await window.safeNfs.open(await this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
+
+      fileInfo.size = await window.safeNfsFile.size(fileInfo.openHandle)
       fileInfo.created = fileMetadata.created
       fileInfo.modified = fileMetadata.modified
       fileInfo.version = fileMetadata.version
+      fileInfo.ETag = fileMetadata.version
       fileInfo.dataMapName = fileMetadata.dataMapName // TODO Debug only!
-
-      // Overwrite ETag using the file version (rather than the enry version)
-      fileInfo.ETag = fullPath + '-v' + fileMetadata.version
+      debug('safe:_makeFileInfo')('2')
       return fileInfo
     } catch (err) {
-      safeWebLog('_makeFileInfo(%s) > safeNfsFile.metadata() FAILED: %s', fullPath, err)
+      logLdp('_makeFileInfo(%s) > safeNfsFile.metadata() FAILED: %s', docPath, err)
       throw err
     }
+    debug('safe:_makeFileInfo')('3')
   }
 
   // Use fileHandle to update cached fileInfo with metadata
   //
   // returns a Promise which resolves to an updated fileInfo
-  async _updateFileInfo (fileHandle, fullPath) {
+  async _updateFileInfo (fileHandle, docPath) {
     try {
-      let fileInfo = await this._getFileInfo(fullPath)
+      let fileInfo = await this._getFileInfo(docPath)
       if (fileInfo) {
         return fileInfo
-      } else { throw new Error('_updateFileInfo( ' + fullPath + ') - unable to update - no existing fileInfo') }
+      } else { throw new Error('_updateFileInfo( ' + docPath + ') - unable to update - no existing fileInfo') }
     } catch (err) {
-      safeWebLog('unable to update file info: %s', err)
+      logLdp('unable to update file info: %s', err)
       throw err
     }
   }
@@ -1810,10 +1952,314 @@ class SafeServiceLDP extends ServiceInterface {
   // Obtain folder listing
   //
 
-  // TODO implement LDP formatted response https://www.w3.org/TR/ldp-primer/
-  async _getFolder (fullPath, options) {
-    safeWebLog('%s._getFolder(%s,%O)', this.constructor.name, fullPath, options)
-    var listing = {}
+  async _getFolder (docUri, options) {
+    logLdp('%s._getFolder(%s,%O)', this.constructor.name, docUri, options)
+    let docPath = pathpart(docUri)
+    let response
+
+    // TODO delete this
+    const containerPrefixes = {
+      posts: '',
+      ldp: 'http://www.w3.org/ns/ldp#',
+      terms: 'http://purl.org/dc/terms/',
+      XML: 'http://www.w3.org/2001/XMLSchema#',
+      st: 'http://www.w3.org/ns/posix/stat#',
+      tur: 'http://www.w3.org/ns/iana/media-types/text/turtle#'
+    }
+
+    var listing = {} // TODO listing output - to be removed now o/p is via an RDF graph
+//    var rdfGraph = N3.Writer({ prefixes: containerPrefixes })
+    var rdfGraph = $rdf.graph()
+
+    // TODO Can we improve 'stat()' for container. See node-solid-server/lib/ldp-container.js addContainerStats()
+let resourceGraph = rdfGraph
+    rdfGraph.add(resourceGraph.sym(docUri), ns.rdf('type'), ns.ldp('BasicContainer'))
+    rdfGraph.add(resourceGraph.sym(docUri), ns.rdf('type'), ns.ldp('Container'))
+
+    try {
+debug('safe:TMP')('1')
+      // Create listing by enumerating container keys beginning with docPath
+      const directoryEntries = []
+      let entriesHandle = await window.safeMutableData.getEntries(await this.storageMd())
+debug('safe:TMP')('2')
+      await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
+        debug('safe:TMP')('3')
+        // Skip deleted entries
+        if (v.buf.length === 0) {
+          // TODO try without this...
+debug('safe:TMP')('4')
+          return true  // Next
+        }
+        logLdp('Key: ', k.toString())
+        logLdp('Value: ', v.buf.toString('base64'))
+        logLdp('entryVersion: ', v.version)
+
+        var dirPath = docPath
+        if (dirPath.slice(-1) !== '/') { dirPath += '/' } // Ensure a trailing slash
+
+        var key = k.toString()
+        // If the folder matches the start of the key, the key is within the folder
+        if (key.length > dirPath.length && key.substr(0, dirPath.length) === dirPath) {
+          debug('safe:TMP')('5')
+          var remainder = key.slice(dirPath.length)
+          var itemName = remainder // File name will be up to but excluding first '/'
+          var firstSlash = remainder.indexOf('/')
+          if (firstSlash !== -1) {
+            itemName = remainder.slice(0, firstSlash + 1) // Directory name with trailing '/'
+          }
+
+          if (options.includeBody) {
+            debug('safe:TMP')('6')
+            let testPath = docPath + this.suffixMeta
+            let fullItemUri = docUri + itemName
+            let metaFilePath
+
+            try {
+              debug('safe:TMP')('7')
+/*              if (await window.safeMutableDataEntries.get(entriesHandle, testPath)) {
+                metaFilePath = testPath
+              }
+*/            } catch (err) {
+              debug('safe:TMP')('8')
+            } // metaFilePath - file not found
+logLdp('calling _addListingEntry for %s', itemName)
+            directoryEntries.push(this._addListingEntry(rdfGraph, fullItemUri, docUri, itemName, metaFilePath))
+            debug('safe:TMP')('9')
+          }
+        }
+      })
+      .then(async _ => Promise.all(directoryEntries)
+      .then(async _ => {
+        logLdp('Iteration finished')
+        let triples = await new $rdf.Serializer(rdfGraph).toN3(rdfGraph)
+
+        // TODO debugging:
+        let jsonString = rdfGraph.toString()
+        debug('safe:TMP')('RDF: %s', jsonString)
+
+        let body = null
+        if (options.includeBody) {
+          body = triples
+        }
+        body = '<safe://solidpoc05/posts/>    "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"        "http://www.w3.org/ns/ldp#BasicContainer",        "http://www.w3.org/ns/ldp#Container".'
+
+        response = new Response(body,
+          { status: 200,
+            statusText: 'OKey dokey',
+            headers: new Headers({
+              'Content-Type': 'text/turtle',
+              'MS-Author-Via': 'SPARQL'
+            })
+          })
+          logLdp('%s._getFolder(\'%s\', ...) response %s: contains %s', this.constructor.name, docUri, response.status, triples)
+
+        return response
+      }))
+    } catch (err) { // TODO review error handling and responses
+      logLdp('safeNfs.getEntries(\'%s\') failed: %s', docUri, err)
+      // TODO are their any SAFE API codes we need to detect?
+      return new Response(null, {status: 404, statusText: '404 Resource Not Found'})
+    }
+
+    return response
+  }
+
+  // Adds a entry to directory listing (file or folder to the RDF graph)
+  async _addListingEntry (resourceGraph, fullItemUri, containerUri, itemName, metaFilePath) {
+    logLdp('%s._addListingEntry(g,%s,%s,%s,%s)', this.constructor.name, fullItemUri, containerUri, itemName, metaFilePath)
+  debug('safe:addListingEntry')('1')
+    let fileInfo = await this._getFileInfo(pathpart(fullItemUri))
+    debug('safe:addListingEntry')('2')
+    resourceGraph = await this._addFileInfo(resourceGraph, fullItemUri, fileInfo)
+    debug('safe:addListingEntry')('3')
+
+    // Add to `contains` list
+    await resourceGraph.add(
+      resourceGraph.sym(containerUri),
+      ns.ldp('contains'),
+      resourceGraph.sym(fullItemUri))
+      debug('safe:addListingEntry')('4')
+
+    // Set up a metaFile path
+    // Earlier code used a .ttl file as its own meta file, which
+    // caused massive data files to parsed as part of deirectory listings just looking for type triples
+    debug('safe:addListingEntry')('5')
+    if (metaFilePath)
+      resourceGraph = await this._addFileMetadata(resourcesGraph, metaFilePath, fullItemUri)
+
+      debug('safe:addListingEntry')('6')
+    return resourceGraph
+  }
+
+  // get LDP metadata for an LDPC container or LDPR/LDP-NR file
+  //
+  // @returns a Promise which resolves to an ldpMetadata
+  //
+  //  Note: to avoid having to parse large files, node-solid-server
+  //  stores file metadata in a .meta file.
+  //
+  //  CONTAINERS
+  //  LDP PATCH or PUT to create a container
+  //  places the body of the request in a .meta file within
+  //  the container, but that behaviour is due to be
+  //  removed, see https://github.com/solid/node-solid-server/issues/547
+  //
+  //  FILES
+  //  I can't find how the .meta is created, but they
+  //  are read. See node-solid-server/lib/ldp-container.js addFile().
+  //  @timbl (Solid gitter 26-feb-18) mentions that they are intended to
+  //  allow information about a resource to be stored, and gives this
+  //  example: https://www.w3.org/2012/ldp/hg/ldp-primer/ldp-primer.html#creating-a-non-rdf-binary-resource-post-an-image-to-an-ldp-bc
+  //
+  //  For now we could take the hit reading the whole file, but obvs
+  //  for large files this becomes unacceptably onerous.
+  //
+  // TODO not implemented!
+  //   - as file .meta seems to be little used for now
+  //   - and container .meta has been dropped from the Solid spec
+  //
+  // Ref: node-solid-server/lib/ldp-container.js addFile()
+  // TODO _getMetadataGraph() returns an $rdf.graph() which may not be compat with N3
+  async _addFileMetadata (resourceGraph, metaFilePath, docUri) {
+    logLdp('%s._addFileMetadata(%O,%s,%s)...', this.constructor.name, resourceGraph, metaFilePath, docUri)
+
+    let metadataGraph = await this._getMetadataGraph(metaFilePath, docUri)
+
+    if (metadataGraph) {
+      // Add Container or BasicContainer types
+      if (safeUtils.isDirectory(docUri)) {
+        resourceGraph.add(metadataGraph.sym(docUri), ns.rdf('type'), ns.ldp('BasicContainer'))
+        resourceGraph.add(metadataGraph.sym(docUri), ns.rdf('type'), ns.ldp('Container'))
+      }
+      // Add generic LDP type
+      resourceGraph.add(metadataGraph.sym(docUri), ns.rdf('type'), ns.ldp('Resource'))
+
+      // Add type from metadataGraph
+      metadataGraph
+        .statementsMatching(
+          metadataGraph.sym(docUri),
+          ns.rdf('type'),
+          undefined)
+        .forEach(function (typeStatement) {
+          // If the current is a file and its type is BasicContainer,
+          // This is not possible, so do not infer its type!
+          if (
+            (
+              typeStatement.object.uri !== ns.ldp('BasicContainer').uri &&
+              typeStatement.object.uri !== ns.ldp('Container').uri
+            ) ||
+            safeUtils.isFolder(docUri)
+          ) {
+            resourceGraph.add(
+              resourceGraph.sym(docUri),
+              typeStatement.predicate,
+              typeStatement.object)
+          }
+        })
+    }
+  }
+
+  async _getMetadataGraph (metaFilePath, docUri) {
+    logLdp('%s._getMetadataGraph(%s,%s)...', this.constructor.name, metaFilePath, docUri)
+
+    let fileHandle
+    let fileInfo = {}
+    let metadataGraph
+    try {
+      fileHandle = await window.safeNfs.fetch(await this.storageNfs(), metaFilePath)
+    } catch (err) {}
+
+    try {
+      // Metadata file exists
+      if (fileHandle) {
+        fileInfo.openHandle = await window.safeNfs.open(await this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
+        let content = await window.safeNfsFile.read(fileInfo.openHandle, 0, fileInfo.size)
+
+        if (content) {
+          logLdp('%s bytes read from file.', content.byteLength)
+
+          // TODO review: to keep lib small, we avoid require('rdflib) and leave
+          // TODO for the application to assign one to $rdf member of the service interface (this)
+          if (!this.$rdf) {
+            throw new Error('%s has no $rdf (rdflib) object - must be set by application to support meta files')
+          }
+
+          let decoder = new TextDecoder()
+          try {
+            metadataGraph = this.$rdf.graph()
+            $rdf.parse(
+              decoder.decode(content),
+              metadataGraph,
+              docUri,
+              'text/turtle')
+          } catch (err) {
+            logLdp('_getMetadataGraph(): ', err)
+            logLdp('ERROR - can\'t parse metadata file: %s', metaFilePath)
+          }
+        }
+      }
+    } catch (err) {
+      logLdp(err)
+    } finally {
+      if (fileInfo.openHandle) {
+        await window.safeNfsFile.close(fileInfo.openHandle)
+      }
+
+      if (fileHandle) {
+        await window.safeNfs.free(fileHandle)
+      }
+    }
+
+    return metadataGraph
+  }
+
+  // SAFE NFS API file metadata comprises created, modified, version & dataMapName
+  //
+  // For an Solid we also need resource metadata from an optional separate meta
+  // file (eg resource-filename.meta)
+  //
+  // See node-solid-server/lib/ldp-container.js addStats()
+  async _addFileInfo (resourceGraph, reqUri, fileInfo) {
+    logLdp('%s._addFileInfo(g,%s,%o)', this.constructor.name,  reqUri, fileInfo)
+
+    resourceGraph.add(
+      resourceGraph.sym(reqUri),
+      ns.stat('size'),
+      fileInfo.size)
+
+    resourceGraph.add(
+      resourceGraph.sym(reqUri),
+      ns.dct('modified'),
+      fileInfo.modified) // An actual datetime value from a Date object
+
+    if (mime.lookup(reqUri)) { // Is the file has a well-known type,
+      let type = 'http://www.w3.org/ns/iana/media-types/' + mime.lookup(reqUri) + '#Resource'
+      resourceGraph.add(
+        resourceGraph.sym(reqUri),
+        ns.rdf('type'), // convert MIME type to RDF
+        resourceGraph.sym(type)
+      )
+    }
+
+    return resourceGraph
+  }
+
+  // TODO delete this - kept while refactoring for RDF
+  async OLD_getFolder (fullPath, options) {
+    logLdp('%s._getFolder(%s,%O)', this.constructor.name, fullPath, options)
+    const containerPrefixes = {
+      posts: '',
+      ldp: 'http://www.w3.org/ns/ldp#',
+      terms: 'http://purl.org/dc/terms/',
+      XML: 'http://www.w3.org/2001/XMLSchema#',
+      st: 'http://www.w3.org/ns/posix/stat#',
+      tur: 'http://www.w3.org/ns/iana/media-types/text/turtle#'
+    }
+
+    var listing = {} // TODO listing output - to be removed now o/p is via an RDF graph
+    var rdfGraph = N3.Writer({ prefixes: containerPrefixes })
+    rdfListing.add(resourceGraph.sym(fullPath), ns.rdf('type'), ns.ldp('BasicContainer'))
+    rdfListing.add(resourceGraph.sym(fullPath), ns.rdf('type'), ns.ldp('Container'))
 
     try {
       // Create listing by enumerating container keys beginning with fullPath
@@ -1825,12 +2271,13 @@ class SafeServiceLDP extends ServiceInterface {
           // TODO try without this...
           return true  // Next
         }
-        safeWebLog('Key: ', k.toString())
-        safeWebLog('Value: ', v.buf.toString('base64'))
-        safeWebLog('entryVersion: ', v.version)
+        logLdp('Key: ', k.toString())
+        logLdp('Value: ', v.buf.toString('base64'))
+        logLdp('entryVersion: ', v.version)
 
         var dirPath = fullPath
         if (dirPath.slice(-1) !== '/') { dirPath += '/' } // Ensure a trailing slash
+        this._addContainerStats(rdfListing, dirPath)
 
         var key = k.toString()
         var fileInfo = {}
@@ -1866,40 +2313,65 @@ class SafeServiceLDP extends ServiceInterface {
           }
           directoryEntries.push(fileInfo)
         }
-      }).then(_ => Promise.all(directoryEntries.map(async (fileInfo) => {
-        safeWebLog('directoryEntries.map() with %s', JSON.stringify(fileInfo))
+      }).then(_ => Promise.all(directoryEntries.map(async (fileEntry) => {
+        logLdp('directoryEntries.map() with %s', JSON.stringify(fileEntry))
 
-        if (fileInfo.fullPath.slice(-1) === '/') {
+        if (fileEntry.fullPath.slice(-1) === '/') {
           // Directory entry:
-          safeWebLog('Listing: ', fileInfo.name)
-          listing[fileInfo.name] = fileInfo
+          logLdp('Listing: ', fileEntry.name)
+          listing[fileEntry.name] = fileEntry
+          this._addFileEntry(rdfListing, fileEntry)
         } else {  // File entry:
           try {
-            safeWebLog('DEBUG: window.safeNfs.fetch(\'%s\')...', fileInfo.fullPath)
-            let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fileInfo.fullPath)
-            fileInfo = await this._makeFileInfo(fileHandle, fileInfo, fileInfo.fullPath)
-            safeWebLog('file created: %s', fileInfo.created)
-            safeWebLog('file modified: %s', fileInfo.modified)
-            safeWebLog('file version: %s', fileInfo.version)
-            safeWebLog('file dataMapName: %s', fileInfo.dataMapName.toString('base64'))
+            var fileInfo = await this._fileInfoCache.get(fileEntry.fullPath)
 
-            // File entry:
-            this._fileInfoCache.set(fileInfo.fullPath, fileInfo)
-            safeWebLog('..._fileInfoCache.set(file: \'%s\')', fileInfo.fullPath)
-            safeWebLog('Listing: ', fileInfo.name)
-            listing[fileInfo.name] = fileInfo
+            if (!fileInfo){
+              // get fileInfo with ldp metadata
+              logLdp('DEBUG: window.safeNfs.fetch(\'%s\')...', fileEntry.fullPath)
+              let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fileEntry.fullPath)
+
+              // ???get file info(){}
+
+              fileInfo = await this._makeFileInfo(fileHandle, fileEntry, fileEntry.fullPath)
+              logLdp('file created: %s', fileInfo.created)
+              logLdp('file modified: %s', fileInfo.modified)
+              logLdp('file version: %s', fileInfo.version)
+              logLdp('file dataMapName: %s', fileInfo.dataMapName.toString('base64'))
+              logLdp('file ldpMetadata: %O', fileInfo.ldpMetadata)
+
+              // File entry:
+              this._fileInfoCache.set(fileInfo.fullPath, fileInfo)
+              logLdp('..._fileInfoCache.set(file: \'%s\')', fileInfo.fullPath)
+              logLdp('Listing: ', fileInfo.name)
+              listing[fileInfo.name] = fileInfo
+            }
+            this._addFileInfo(containerListing,fileInfo)
           } catch (err) {
-            safeWebLog('_getFolder(\'%s\') Skipping invalid entry. Error: %s', fileInfo.fullPath, err)
+            logLdp('_getFolder(\'%s\') Skipping invalid entry. Error: %s', fileInfo.fullPath, err)
           }
         }
       })))
 
-      safeWebLog('Iteration finished')
-      safeWebLog('%s._getFolder(\'%s\', ...) RESULT: listing contains %s', fullPath, JSON.stringify(listing), this.constructor.name)
-      var folderMetadata = {contentType: RS_DIR_MIME_TYPE}        // mrhTODOx - check what is expected and whether we can provide something
-      return new Response(null, {status: 200, body: listing, meta: folderMetadata, contentType: RS_DIR_MIME_TYPE /*, mrhTODOx revision: folderETagWithoutQuotes */})
+      logLdp('Iteration finished')
+      logLdp('%s._getFolder(\'%s\', ...) RESULT: listing contains %s', fullPath, JSON.stringify(listing), this.constructor.name)
+      var folderMetadata = {contentType: 'text/turtle'}
+      let response = new Response(null,
+        { status: 200,
+        statusText: 'OK',
+        meta: folderMetadata,
+        headers: new Headers({
+          'Content-Type': 'text/turtle',
+          'MS-Author-Via': 'SPARQL'
+        })
+        /*, mrhTODOx revision: folderETagWithoutQuotes */
+      })
+      if (options.includeBody){
+        response.body = listing
+      }
+      return response
+
     } catch (err) {
-      safeWebLog('safeNfs.getEntries(\'%s\') failed: %s', fullPath, err.status)
+      logLdp('safeNfs.getEntries(\'%s\') failed: %s', fullPath, err)
       // var status = (err === 'Unauthorized' ? 401 : 404); // mrhTODO
       // ideally safe-js would provide response code (possible enhancement)
       if (err.status === undefined) {
@@ -1918,65 +2390,103 @@ class SafeServiceLDP extends ServiceInterface {
     }
   }
 
-  // Check if file exists
+  // Check if file/folder exists and if it does, returns metadata which is kept in a cache
   //
-  // Checks if the file (fullPath) is in the _fileInfoCache(), and if
-  // not found obtains a parent folder listing to check if it exists.
-  // Causes update of _fileInfoCache with contents of its parent folder.
+  // Checks if the file (docPath) is in the _fileInfoCache(), and if
+  // not found attempts to get its metadata
   //
   // Folders - a folder is inferred, so:
   // - a folder is deemed valid if any *file* path contains it
   // - fileInfo for a folder lacks a version or eTag
   //
-  // returns a promise with
-  //   if a file { path: string, ETag: string, 'Content-Length': number }
-  //   if a folder { path: string, ETag: string }
-  //   if root '/' { path: '/' ETag }
-  //   or {} if file/folder doesn't exist
+  // @param docPath  the path of a file/folder in the storage container
+  // @param optional refreshCache, if true clears cache first
+  //
+  // @returns a promise with
+  //   if a file { path: string, ETag: string, 'Content-Length': number, ldpMetadata: object }
+  //   if a folder { path: string, ETag: string, ldpMetadata: object }
+  //   if root '/' { path: '/', ETag: string, ldpMetadata: object }
+  //   or {} if file/folder doesn't exist, or the cached info doesn't match version
   //
   // See _getFolder() to confirm the above content values (as it creates
   // fileInfo objects)
   //
-  async _getFileInfo (fullPath) {
-    safeWebLog('%s._getFileInfo(%s)', this.constructor.name, fullPath)
+  // TODO ??? implement version param - check if anything needs this first?
+  // TODO ??? implement Solid metadata for folders (Solid uses stat())
+  async _getFileInfo (docPath, refreshCache) {
+    logLdp('%s._getFileInfo(%s)', this.constructor.name, docPath)
     try {
-      if (fullPath === '/') {
-        return { path: fullPath, ETag: 'root' }
-      } // Dummy fileInfo to stop at "root"
-
-      var info = await this._fileInfoCache.get(fullPath)
-      if (info) { return info }
-
-      // Not yet cached or doesn't exist
-      // Load parent folder listing update _fileInfoCache.
-      let rootVersion = window.safeMutableData.getVersion(await this.storageMd())
-
-/* TODO there seems no point calling _getFileInfo on a folder so could just
-let that trigger an error in this function, then fix the call to handle differently
-*/
-      if (isFolder(fullPath)) {    // folder, so fake its info
-        // Add file info to cache
-        var fileInfo = {
-          fullPath: fullPath // Used by _fileInfoCache() but nothing else
-        }
-        this._fileInfoCache.set(fullPath, fileInfo)
-        return fileInfo
+debug('safe:getFileInfo')('1')
+      if (refreshCache) {
+        this._fileInfoCache.delete(docPath)
       }
 
-      // Get the parent directory and test if the file is listed
-      await this._getFolder(parentPath(fullPath))
-      info = this._fileInfoCache.get(fullPath)
-      if (info) {
-        return info
+debug('safe:getFileInfo')('2')
+      let fileInfo
+      if (docPath !== '/') {
+        fileInfo = await this._fileInfoCache.get(docPath)
+        if (fileInfo) { return fileInfo }
+      }
+      // Not yet cached or doesn't exist
+
+debug('safe:getFileInfo')('3')
+      // Folders //
+      let smd = await this.storageMd()
+debug('safe:getFileInfo')('3-A')
+
+      let rootVersion = 1// await window.safeMutableData.getVersion(smd)
+debug('safe:getFileInfo')('3-B')
+      if (docPath === '/') {
+debug('safe:getFileInfo')('3-END')
+
+        return { path: docPath, ETag: rootVersion.toString() }
+      } // Dummy fileInfo to stop at "root"
+
+debug('safe:getFileInfo')('4')
+      if (isFolder(docPath)) {
+        debug('safe:getFileInfo')('5')
+        // TODO Could use _getFolder() in order to generate Solid metadata
+        var folderInfo = {
+          docPath: docPath // Used by _fileInfoCache() but nothing else
+        }
+        this._fileInfoCache.set(docPath, folderInfo)
+        return folderInfo
+      }
+
+      // Files //
+      let fileHandle
+      try {
+debug('safe:getFileInfo')('6')
+        fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
+        logLdp('_getFileInfo() - fetched fileHandle: %s', fileHandle.toString())
+        fileInfo = await this._makeFileInfo(fileHandle, {}, docPath)
+debug('safe:getFileInfo')('7')
+      } catch (err) {
+        fileInfo = null
+      }
+      if (fileInfo && fileInfo.openHandle) {
+        debug('safe:getFileInfo')('8')
+        await window.safeNfsFile.close(fileInfo.openHandle)
+      }
+
+      if (fileInfo) {
+        debug('safe:getFileInfo')('9')
+        this._fileInfoCache.set(docPath, fileInfo)
+        if (fileHandle) {
+          window.safeNfs.free(fileHandle)
+        }
+
+        return fileInfo
       } else {
         // file, doesn't exist
-        safeWebLog('_getFileInfo(%s) file does not exist, no fileInfo available ', fullPath)
+        logLdp('_getFileInfo(%s) file does not exist, no fileInfo available ', docPath)
         return null
       }
     } catch (err) {
-      safeWebLog('_getFileInfo(%s) FAILED: %s', fullPath, err)
+      logApi('_getFileInfo(%s) FAILED: %s', docPath, err)
       throw err
     }
+    debug('safe:getFileInfo')('3-END')
   }
 }
 
@@ -2005,17 +2515,6 @@ module.exports.parentPath = safeUtils.parentPath
 
 module.exports.SN_TAGTYPE_LDP = SN_TAGTYPE_LDP
 module.exports.SN_SERVICEID_LDP = SN_SERVICEID_LDP
-
-// Create and export LDP service for Solid apps:
-//
-// TODO move this to a services loading feature
-
-/*
-// TODO remove once SafenetworkServices implemented:
-let safeLDP = new SafeServiceLDP(safeWeb);
-
-module.exports.safeLDP =  ServiceInterface.bind(safeLDP);
-*/
 
 /*
  *  Override window.fetch() in order to support safe:// URIs

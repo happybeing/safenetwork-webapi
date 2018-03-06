@@ -96,30 +96,30 @@ function Metadata () {
 * Adapted from node-solid-server/lib/headers.js
 */
 
-function addLink (res, value, rel) {
-  var oldLink = res.get('Link')
+function addLink (headers, value, rel) {
+  var oldLink = headers.get('Link')
   if (oldLink === undefined) {
-    res.set('Link', '<' + value + '>; rel="' + rel + '"')
+    headers.set('Link', '<' + value + '>; rel="' + rel + '"')
   } else {
-    res.set('Link', oldLink + ', ' + '<' + value + '>; rel="' + rel + '"')
+    headers.set('Link', oldLink + ', ' + '<' + value + '>; rel="' + rel + '"')
   }
 }
 
-function addLinks (res, fileMetadata) {
+function addLinks (headers, fileMetadata) {
   if (fileMetadata.isResource) {
-    addLink(res, 'http://www.w3.org/ns/ldp#Resource', 'type')
+    addLink(headers, 'http://www.w3.org/ns/ldp#Resource', 'type')
   }
   if (fileMetadata.isSourceResource) {
-    addLink(res, 'http://www.w3.org/ns/ldp#RDFSource', 'type')
+    addLink(headers, 'http://www.w3.org/ns/ldp#RDFSource', 'type')
   }
   if (fileMetadata.isContainer) {
-    addLink(res, 'http://www.w3.org/ns/ldp#Container', 'type')
+    addLink(headers, 'http://www.w3.org/ns/ldp#Container', 'type')
   }
   if (fileMetadata.isBasicContainer) {
-    addLink(res, 'http://www.w3.org/ns/ldp#BasicContainer', 'type')
+    addLink(headers, 'http://www.w3.org/ns/ldp#BasicContainer', 'type')
   }
   if (fileMetadata.isDirectContainer) {
-    addLink(res, 'http://www.w3.org/ns/ldp#DirectContainer', 'type')
+    addLink(headers, 'http://www.w3.org/ns/ldp#DirectContainer', 'type')
   }
 }
 
@@ -175,9 +175,9 @@ function getBaseUri (req) {
 /*
  * npm modules
  */
-module.exports.path = require('path')
-let S = module.exports.string = require('string')
-module.exports.url = require('url')
+const path = module.exports.path = require('path')
+const S = module.exports.string = require('string')
+const url = module.exports.url = require('url')
 
 /*
  * Local helpers
@@ -192,8 +192,8 @@ module.exports.Cache = Cache
 
 // Adapted/copied from node-solid-server
 module.exports.Metadata = Metadata
-module.exports.headers.addLink = addLink
-module.exports.headers.addLinks = addLinks
+module.exports.addLink = addLink
+module.exports.addLinks = addLinks
 
 module.exports.getFullUri = getFullUri
 module.exports.pathBasename = pathBasename
