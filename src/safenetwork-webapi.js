@@ -15,6 +15,37 @@
  */
 
 /* TODO:
+Solid + SAFE PoC
+================
+[/]   1. update first PoC (write/read blog by owner only)
+  [ ] BUG: author avatar image does not display because browser can't access Solid service storage
+[ ]   2. create second PoC (which allows me to write blog, others to read it)
+  [ ] rename LDP to Solid (as I'm following the Solid spec which is based on, not identical to LDP)
+  [ ] split serviceinterface and  implementations into separate files
+  [ ] for now: SafeServiceLDP to use www service (and enable service when host profile is 'plume', 'solid' or 'ldp'?)
+  [ ] customise Peruse web fetch to support service 'solid'
+  [ ] submit PR for Peruse to add support for 'solid' service
+  [ ] change  SafenetworkServiceLDP back to service 'solid'
+  [ ] review how to integrate with rdflib.js (maybe just mod that to allow a protoFetch to be set?)
+[ ] TODO go through todos in the code...
+
+Future
+======
+[ ] write up what to aim for in terms of access control (is it just MD or also ID?
+    try to come up with a Solid compatible way of implementing this with SAFE functinoality
+    see: https://forum.safedev.org/t/modelling-file-system-permissions-using-safe-network/1480?u=happybeing
+[ ]   1. implement a simple www service
+[ ]   2. implement RemoteStorage as a SAFE service
+[ ]   3. consider how to implement a file share / URL shortener as a service
+[ ] thorough linting
+[ ] consider adding other web services (e.g. RemoteStorage, WebDav)
+[ ] decide if I should use express.router() (see node-solid-server) in a revised architecture
+[ ] validate against LDP test suites:
+  - https://w3c.github.io/ldp-testsuite/
+  - https://github.com/solid/node-solid-server/tree/master/test/integration
+
+Work In Progress
+----------------
 [/] migrate RS code to LDP service and refactor to async/await
 [/] check everything in:
     - milestone-01 SafenetworkWebApi-coded-broken
@@ -33,8 +64,6 @@
     [/] examine solid-server resonse to Plume get('../posts/')
     [/] implement in _getFolder() to create RDF response
 [/] test main Plume features: New Post, Delete Post, Edit Post, List Posts
-[ ] BUG: author avatar image does not display because browser can't access Solid service storage
-    [ ] Fix by either 1) customise browser web fetch to handle Solid service OR 2) change to use www service (and enable service when host profile is 'solid' or 'ldp'?)
 [ ] Outstanding GET container issues:
     [ ] look into differences (see zim comparisson solid server versus my turtle):
         - missing 'posts:'
@@ -50,51 +79,35 @@
 [ ]   1. test update to container
 [ ]   2. test access to LDP container by owner
 [ ]   3. test access to LDP container by NON-owner (ie while logged out)
-[ ] change LDP to be a web compatible service. This makes all LDP posted data
-    public by default so that www access to a Solid resource will work by default.
-    This is ok for poc and many uses, but not a final solution.
-  [ ] change services entry to use www (name and tag_type)
-  [ ] move all www aspects to class SafeServiceWww (eg www name/tag_type)
-  [ ] change SafeServiceLDP to extend SafeServiceWww
-  [ ] provide app with function SafenetworkWebApi.activateServiceFor(host,serviceName,doSetup)
-      where host is (ldp.solidpoc, or mysolid), serviceName would be 'ldp' and if doSetup is
-      true and the public name or service is not yet set up on host, it will ensure the
-      name is created and the service set up, before activating it.
-  [ ] write up what to aim for in terms of access control (is it just MD or also ID?) and
-      try to come up with a Solid compatible way of implementing this with SAFE functinoality
+[/] provide app with function SafenetworkWebApi.setupServiceOnHost()
 [ ] try to use LDP to update a container that is also accessible by www service!
-[ ] rename LDP to Solid (as I'm following the Solid spec which is based on, not identical to LDP)
 [ ] revise setup to create default containers, see: https://github.com/solid/solid-spec/blob/master/recommendations-server.md
 [ ] review CORS requirements (relevance to SAFE?): https://github.com/solid/solid-spec/blob/master/recommendations-server.md
+[ ] TODO BUGS:
+  [/] publish post shows 404 rather than the post, because app.js fetches a post.url which is different from the saved url (title prefixed with time)
+  [ ] TODO encrypt entries (value + key) in _publicNames
+      -> add encrypt param to get/set key and listMd()
+      -> see https://github.com/maidsafe/safe_examples/blob/2f06aa65025a417a70cf6e93185dbe5ffcb44b9e/web_hosting_manager/app/safenet_comm/api.js#L715
+  [ ] TODO safeWeb().isConnected() broken because _isConnected always false (may be fixed if I use rdflib.js SafenetworkWebApi)
+  [ ] TODO disallow service creation with empty profile for all but www
+  [ ] TODO [may be redundant - SAFE API changes coming] refactor to eliminate memory leaks (e.g. using 'finally')
+
+SafenetworkWebApi
+-----------------
+[ ] provide documentation README.md for github
+  [ ] mandate standard.js for all pull contributions
+  [ ] implement a documentation build (based on source)
+[ ] rename the github repo to be safenetwork-web-api
+[ ] add further APIs:
+  [ ] Nfs file API for www and solid services: create/update/delete
+  [ ] review public name and service creation for ease of use
+  [ ] APIs to enumerate services, public names, services on a public name, files in service container
 [/] fix SAFE API issue with safeNfs.create() and
-see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-string-buffer-arraybuffer-array/1325/23?u=happybeing)
-[ ]   1. update first PoC (write/read block by owner only)
-[ ]   2. create second PoC (which allows me to write blog, others to read it)
-  [ ] may need build of Peruse where webFetch() works on LDP containers not just www
-[ ] review usefulness of my getServicesMdFromContainers (is getServciesMdFor enough?)
-[ ] review ServiceInterface implementations and
-[ ]   1. implement a simple www service
-[ ]   2. implement RemoteStorage as a SAFE service
-[ ]   3. consider how to implement a file share / URL shortener as a service
-[ ] thorough linting
+  see: https://forum.safedev.org/t/safenfs-create-error-first-argument-must-be-a-string-buffer-arraybuffer-array/1325/23?u=happybeing)
+[ ] review ServiceInterface implementation:
+  maybe move all www aspects to class SafeServiceWww (eg www name/tag_type), change SafeServiceLDP to extend SafeServiceWww
+
 */
-// TODO BUGS:
-//  [ ] publish post shows 404 rather than the post, because app.js fetches a post.url which is different from the saved url (title prefixed with time)
-//  [ ] safeWeb().isConnected() broken because _isConnected always false (Imay be fixed if I use rdflib.js SafenetworkWebApi)
-// TODO test get folder and then convert to proper LDP response
-// TODO encrypte entries (value + key) in _publicNames
-//      -> add encrypt param to get/set key and listMd()
-//      -> see https://github.com/maidsafe/safe_examples/blob/2f06aa65025a417a70cf6e93185dbe5ffcb44b9e/web_hosting_manager/app/safenet_comm/api.js#L715
-// TODO disallow service creation with empty profile for all but www
-// TODO maybe provide methods to enumerate public names & services
-// TODO refactor to eliminate memory leaks (e.g. using 'finally')
-// TODO consider adding other web services (e.g. WebDav)
-// TODO go through todos in the code...
-// TODO FUTURE: decide if I should use
-// TODO express.router() (see node-solid-server) in a revised architecture
-// TODO validate against LDP test suites:
-//  - https://w3c.github.io/ldp-testsuite/
-//  - https://github.com/solid/node-solid-server/tree/master/test/integration
 
 localStorage.debug = '*'
 
