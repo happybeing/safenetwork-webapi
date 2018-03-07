@@ -29,9 +29,17 @@
 [/] revert back to latest code
 [/] check it now works
 [/] apply standard formatting (most but not all errors fixed)
-[ ] create RDF response to GET container:
+[/] create RDF response to GET container:
     [/] examine solid-server resonse to Plume get('../posts/')
     [/] implement in _getFolder() to create RDF response
+[/] test main Plume features: New Post, Delete Post, Edit Post, List Posts
+[ ] BUG: author avatar image does not display because browser can't access Solid service storage
+    [ ] Fix by either 1) customise browser web fetch to handle Solid service OR 2) change to use www service (and enable service when host profile is 'solid' or 'ldp'?)
+[ ] Outstanding GET container issues:
+    [ ] look into differences (see zim comparisson solid server versus my turtle):
+        - missing 'posts:'
+        - each RDF resource is missing 'ldp:Resource'
+        - modifiedis  missing '^^XML:dateTime'
     [ ] try using different parser if I can (to eliminate $rdf / rdflib.js) (maybe N3?)
 [ ] add basic response headers (links) for each method:
     [ ] note solid-plume looks for 'User' and 'Updates-Via' but my PUT omits both
@@ -996,27 +1004,20 @@ class SafenetworkWebApi {
 
     let response
     try {
-      debug('safe:_fetch')('1')
       let service = await this.getServiceForUri(docUri)
 
-      debug('safe:_fetch')('2')
       if (service) {
-        debug('safe:_fetch')('3')
         if (!options.method) {
           options.method = 'GET'
         }
         let handler = service.getHandler(options.method)
-        debug('safe:_fetch')('4 handler: %o', handler)
         response = await handler.call(service, docUri, options)
-        debug('safe:_fetch')('5 response: %O', response)
       }
     } catch (err) {
       logApi('%s._fetch() error: %s', this.constructor.name, err)
     }
 
-    debug('safe:_fetch')('6')
     if (!response) {
-      debug('safe:_fetch')('7 response: %O')
       logApi('%s._fetch() - no service available, defaulting to webFetch()...', this.constructor.name)
 
       try {
@@ -1525,28 +1526,21 @@ class SafeServiceLDP extends ServiceInterface {
   //
   // @returns a promise which resolves to the Mutable Handle
   async storageMd () {
-debug('safe:storageMd')('1')
     if (this._storageMd) {
       return this._storageMd
     }
 
     logLdp('storageMd()')
     try {
-      let enc = new TextDecoder
-
       // The service value is the address of the storage container (Mutable Data)
-debug('safe:storageMd')('2')
       this._storageMd = await window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue().buf, this.getTagType())
-debug('safe:storageMd')('3')
-      // TODO validity check:
+      // TODO remove this validity check:
       await window.safeMutableData.getVersion(this._storageMd)
-debug('safe:storageMd')('4')
       return this._storageMd
     } catch (err) {
       logLdp('Unable to access Mutable Data for %s service: %s', this.getName(), err)
       throw (err)
     }
-debug('safe:storageMd')('5')
   }
 
   /*
@@ -1663,15 +1657,11 @@ debug('safe:storageMd')('5')
 
   async delete (docUri, options) {
     logLdp('%s.delete(%s,%O)', this.constructor.name, docUri, options)
-
-    if (isFolder(docUri)) {
-      return this._fakeDeleteContainer(docUri, options)
-    }
+    let docPath = pathpart(docUri)
 
     try {
       let fileInfo = await this._getFileInfo(pathpart(docUri))
       if (!fileInfo) {
-        // Resource doesn't exist
         return new Response(null, {status: 404, statusText: '404 Not Found'})
       }
 
@@ -1680,12 +1670,16 @@ debug('safe:storageMd')('5')
         return new Response(null, {status: 412, revision: etagWithoutQuotes})
       }
 
-      if (!isFolder(docUri)) {
+      if (isFolder(docUri)) {
+        return this._fakeDeleteContainer(docUri, options)
+      }
+
+      if (!isFolder(docPath)) {
         logLdp('safeNfs.delete() param this.storageNfs(): ' + await this.storageNfs())
-        logLdp('                 param path: ' + docUri)
+        logLdp('                 param path: ' + docPath)
         logLdp('                 param version: ' + fileInfo.version)
         logLdp('                 param containerVersion: ' + fileInfo.containerVersion)
-        await window.safeNfs.delete(await this.storageNfs(), docUri, fileInfo.version + 1)
+        await window.safeNfs.delete(await this.storageNfs(), docPath, fileInfo.version + 1)
         this._fileInfoCache.delete(docUri)
         return new Response(null, {status: 204, statusText: '204 No Content'})
       }
@@ -1749,21 +1743,13 @@ debug('safe:storageMd')('5')
       } else {
         // Store content as new immutable data (pointed to by fileHandle)
         let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
-        // TODO set file metadata (contentType) - how?
 
         // Add file to directory (by inserting fileHandle into container)
         fileHandle = await window.safeNfs.update(await this.storageNfs(), fileHandle, docPath, fileInfo.containerVersion + 1)
         await this._updateFileInfo(fileHandle, docPath)
-        var response = { status: (fileHandle ? 200 : 400) }
-        // mrhTODO currently just a response that resolves to truthy (may be exteneded to return status?)
-        this.reflectNetworkStatus(true)
-
-        // TODO Not sure if eTags can still be simulated:
-        // TODO would it be better to not delete, but set fileHandle in the fileInfo?
-        this._fileInfoCache.delete(docPath)     // Invalidate any cached eTag
 
         // TODO implement LDP PUT response https://www.w3.org/TR/ldp-primer/
-        return new Response(response)
+        return new Response(null, {status: (fileHandle ? 200 : 400)})
       }
     } catch (err) {
       logLdp('Unable to update file \'%s\' : %s', docUri, err)
@@ -1792,37 +1778,6 @@ debug('safe:storageMd')('5')
       return new Response(null, {status: 200, statusText: 'OK'})
     } catch (err) {
       logLdp('Unable to create file \'%s\' : %s', docUri, err)
-      // TODO can we decode the SAFE API errors to provide better error responses
-      return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
-    }
-  }
-
-  async DETETETHIS_getFile (fullPath, options) {
-    logLdp('%s._getFile(%s,%O)', this.constructor.name, fullPath, options)
-    try {
-      if (!this.isConnected()) {
-        return new Response(null, {status: 503, statusText: '503 not connected to SAFE network'})
-      }
-
-// Check if file exists by obtaining directory listing if not already cached (why do this way?)
-let fileInfo = await this._getFileInfo(fullPath)
-      if (!fileInfo) {
-        return new Response(null, {status: 404, statusText: '404 File not found'})
-      }
-
-      // TODO If the options are being use to retrieve specific version
-      // should we get the latest version from the API first?
-      var etagWithoutQuotes = fileInfo.ETag
-
-      // Request is for changed file, so if eTag matches return "304 Not Modified"
-      if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
-        // TODO does the response object automatically create statusText?
-        return new Response(null, {status: 304})
-      }
-
-      return this._getFileContent(fullPath,options)
-    } catch (err) {
-      logLdp('Unable to get file: %s', err)
       // TODO can we decode the SAFE API errors to provide better error responses
       return new Response(null, {status: 500, statusText: '500 Internal Server Error (' + err + ')'})
     }
@@ -1915,7 +1870,6 @@ let fileInfo = await this._getFileInfo(fullPath)
   // Note: if the fileInfo object includes an openHandle this should be closed by the caller
   async _makeFileInfo (fileHandle, fileInfo, docPath) {
     try {
-      debug('safe:_makeFileInfo')('1')
       let fileMetadata = await window.safeNfsFile.metadata(fileHandle)
       fileInfo.openHandle = await window.safeNfs.open(await this.storageNfs(), fileHandle, 4/* read TODO get from safeApp.CONSTANTS */)
 
@@ -1925,13 +1879,12 @@ let fileInfo = await this._getFileInfo(fullPath)
       fileInfo.version = fileMetadata.version
       fileInfo.ETag = fileMetadata.version
       fileInfo.dataMapName = fileMetadata.dataMapName // TODO Debug only!
-      debug('safe:_makeFileInfo')('2')
+      this._fileInfoCache.set(docPath, fileInfo)    // Update the cached version
       return fileInfo
     } catch (err) {
       logLdp('_makeFileInfo(%s) > safeNfsFile.metadata() FAILED: %s', docPath, err)
       throw err
     }
-    debug('safe:_makeFileInfo')('3')
   }
 
   // Use fileHandle to update cached fileInfo with metadata
@@ -1939,7 +1892,7 @@ let fileInfo = await this._getFileInfo(fullPath)
   // returns a Promise which resolves to an updated fileInfo
   async _updateFileInfo (fileHandle, docPath) {
     try {
-      let fileInfo = await this._getFileInfo(docPath)
+      let fileInfo = await this._makeFileInfo(fileHandle, {}, docPath)
       if (fileInfo) {
         return fileInfo
       } else { throw new Error('_updateFileInfo( ' + docPath + ') - unable to update - no existing fileInfo') }
@@ -2043,20 +1996,6 @@ logLdp('calling _addListingEntry for %s', itemName)
             }
           })
 
-logLdp('result of $rdf.serialize(null, rdfGraph, \'safe://solidpoc05/posts/\', \'text/turtle\'):')
-logLdp('%s', triples)
-      $rdf.serialize(null, rdfGraph, docUri, 'application/n-triples',// 'text/turtle',
-        function (err, result) {
-          if (!err) {
-            triples = result
-          } else {
-            throw err
-          }
-        })
-        // TODO debugging:
-        let jsonString = rdfGraph.toString()
-        debug('safe:TMP')('RDF: %s', jsonString)
-
         let body = null
         if (options.includeBody) {
           body = triples
@@ -2070,9 +2009,7 @@ logLdp('%s', triples)
               'MS-Author-Via': 'SPARQL'
             })
           })
-logLdp('result of $rdf.serialize(null, rdfGraph, \'safe://solidpoc05/posts/\', \'application/n-triples\'):')
-logLdp('%s', triples)
-          logLdp('%s._getFolder(\'%s\', ...) response %s: contains %s', this.constructor.name, docUri, response.status, triples)
+          logLdp('%s._getFolder(\'%s\', ...) response %s body:\n %s', this.constructor.name, docUri, response.status, triples)
 
         return response
       }))
@@ -2088,29 +2025,21 @@ logLdp('%s', triples)
   // Adds a entry to directory listing (file or folder to the RDF graph)
   async _addListingEntry (resourceGraph, fullItemUri, containerUri, itemName, metaFilePath) {
     logLdp('%s._addListingEntry(g,%s,%s,%s,%s)', this.constructor.name, fullItemUri, containerUri, itemName, metaFilePath)
-  debug('safe:addListingEntry')('1')
     let fileInfo = await this._getFileInfo(pathpart(fullItemUri))
-    debug('safe:addListingEntry')('2')
     resourceGraph = await this._addFileInfo(resourceGraph, fullItemUri, fileInfo)
-    debug('safe:addListingEntry')('3')
-
-    let predicate =  ns.ldp('contains') // TODO remove debug
 
     // Add to `contains` list
     let newTriple = resourceGraph.add(
       resourceGraph.sym(containerUri),
       ns.ldp('contains'),
       resourceGraph.sym(fullItemUri))
-      debug('safe:addListingEntry')('4 newTriple: %o', newTriple)
 
     // Set up a metaFile path
     // Earlier code used a .ttl file as its own meta file, which
     // caused massive data files to parsed as part of deirectory listings just looking for type triples
-    debug('safe:addListingEntry')('5')
     if (metaFilePath)
-      resourceGraph = await this._addFileMetadata(resourcesGraph, metaFilePath, fullItemUri)
+      resourceGraph = this._addFileMetadata(resourcesGraph, metaFilePath, fullItemUri)
 
-      debug('safe:addListingEntry')('6')
     return resourceGraph
   }
 
@@ -2267,152 +2196,6 @@ logLdp('%s', triples)
     return resourceGraph
   }
 
-  // TODO delete this - kept while refactoring for RDF
-  async OLD_getFolder (fullPath, options) {
-    logLdp('%s._getFolder(%s,%O)', this.constructor.name, fullPath, options)
-    const containerPrefixes = {
-      posts: '',
-      ldp: 'http://www.w3.org/ns/ldp#',
-      terms: 'http://purl.org/dc/terms/',
-      XML: 'http://www.w3.org/2001/XMLSchema#',
-      st: 'http://www.w3.org/ns/posix/stat#',
-      tur: 'http://www.w3.org/ns/iana/media-types/text/turtle#'
-    }
-
-    var listing = {} // TODO listing output - to be removed now o/p is via an RDF graph
-    var rdfGraph = N3.Writer({ prefixes: containerPrefixes })
-    rdfListing.add(resourceGraph.sym(fullPath), ns.rdf('type'), ns.ldp('BasicContainer'))
-    rdfListing.add(resourceGraph.sym(fullPath), ns.rdf('type'), ns.ldp('Container'))
-
-    try {
-      // Create listing by enumerating container keys beginning with fullPath
-      const directoryEntries = []
-      let entriesHandle = await window.safeMutableData.getEntries(await this.storageMd())
-      await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
-        // Skip deleted entries
-        if (v.buf.length === 0) {
-          // TODO try without this...
-          return true  // Next
-        }
-        logLdp('Key: ', k.toString())
-        logLdp('Value: ', v.buf.toString('base64'))
-        logLdp('entryVersion: ', v.version)
-
-        var dirPath = fullPath
-        if (dirPath.slice(-1) !== '/') { dirPath += '/' } // Ensure a trailing slash
-        this._addContainerStats(rdfListing, dirPath)
-
-        var key = k.toString()
-        var fileInfo = {}
-        // If the folder matches the start of the key, the key is within the folder
-        if (key.length > dirPath.length && key.substr(0, dirPath.length) === dirPath) {
-          var remainder = key.slice(dirPath.length)
-          var itemName = remainder // File name will be up to but excluding first '/'
-          var firstSlash = remainder.indexOf('/')
-          if (firstSlash !== -1) {
-            itemName = remainder.slice(0, firstSlash + 1) // Directory name with trailing '/'
-          }
-
-          // Add file/directory info to cache and for return as listing
-          var fullItemPath = dirPath + itemName
-          // First part of fileInfo
-          fileInfo = {
-            name: itemName,       // File or directory name
-            fullPath: fullItemPath,   // Full path including name
-            entryVersion: v.version, // mrhTODO for debug
-
-            // Remaining members must pass test: sync.js#corruptServerItemsMap()
-            ETag: 'dummy-etag-for-folder'  // Must be present, but we fake it because diretories are implied (not versioned objects)
-                                                  // For folders an ETag is only useful for get: and _getFolder() ignores options so faking is ok
-          }
-
-          if (firstSlash === -1) { // File not folder
-            // Files have metadata but directories DON'T (faked above)
-            var metadata // mrhTODO ??? - obtain this?
-            metadata = { mimetype: 'application/json; charset=UTF-8' }  // mrhTODO fake it until implemented - should never be used
-// mrhTODOx add in get file size - or maybe leave this unset, and set it when getting the file?
-            fileInfo['Content-Length'] = 123456 // mrhTODO: item.size,
-            fileInfo['Content-Type'] = metadata.mimetype  // metadata.mimetype currently faked (see above) mrhTODO see next
-          }
-          directoryEntries.push(fileInfo)
-        }
-      }).then(_ => Promise.all(directoryEntries.map(async (fileEntry) => {
-        logLdp('directoryEntries.map() with %s', JSON.stringify(fileEntry))
-
-        if (fileEntry.fullPath.slice(-1) === '/') {
-          // Directory entry:
-          logLdp('Listing: ', fileEntry.name)
-          listing[fileEntry.name] = fileEntry
-          this._addFileEntry(rdfListing, fileEntry)
-        } else {  // File entry:
-          try {
-            var fileInfo = await this._fileInfoCache.get(fileEntry.fullPath)
-
-            if (!fileInfo){
-              // get fileInfo with ldp metadata
-              logLdp('DEBUG: window.safeNfs.fetch(\'%s\')...', fileEntry.fullPath)
-              let fileHandle = await window.safeNfs.fetch(await this.storageNfs(), fileEntry.fullPath)
-
-              // ???get file info(){}
-
-              fileInfo = await this._makeFileInfo(fileHandle, fileEntry, fileEntry.fullPath)
-              logLdp('file created: %s', fileInfo.created)
-              logLdp('file modified: %s', fileInfo.modified)
-              logLdp('file version: %s', fileInfo.version)
-              logLdp('file dataMapName: %s', fileInfo.dataMapName.toString('base64'))
-              logLdp('file ldpMetadata: %O', fileInfo.ldpMetadata)
-
-              // File entry:
-              this._fileInfoCache.set(fileInfo.fullPath, fileInfo)
-              logLdp('..._fileInfoCache.set(file: \'%s\')', fileInfo.fullPath)
-              logLdp('Listing: ', fileInfo.name)
-              listing[fileInfo.name] = fileInfo
-            }
-            this._addFileInfo(containerListing,fileInfo)
-          } catch (err) {
-            logLdp('_getFolder(\'%s\') Skipping invalid entry. Error: %s', fileInfo.fullPath, err)
-          }
-        }
-      })))
-
-      logLdp('Iteration finished')
-      logLdp('%s._getFolder(\'%s\', ...) RESULT: listing contains %s', fullPath, JSON.stringify(listing), this.constructor.name)
-      var folderMetadata = {contentType: 'text/turtle'}
-      let response = new Response(null,
-        { status: 200,
-        statusText: 'OK',
-        meta: folderMetadata,
-        headers: new Headers({
-          'Content-Type': 'text/turtle',
-          'MS-Author-Via': 'SPARQL'
-        })
-        /*, mrhTODOx revision: folderETagWithoutQuotes */
-      })
-      if (options.includeBody){
-        response.body = listing
-      }
-      return response
-
-    } catch (err) {
-      logLdp('safeNfs.getEntries(\'%s\') failed: %s', fullPath, err)
-      // var status = (err === 'Unauthorized' ? 401 : 404); // mrhTODO
-      // ideally safe-js would provide response code (possible enhancement)
-      if (err.status === undefined) {
-        err.status = 401
-      } // Force Unauthorised, to handle issue in safe-js:
-
-      /* TODO review -old RS code
-      if (err.status === 401){
-        // Modelled on how googledrive.js handles expired token
-        if (this.connected){
-          this.connect();
-          return resolve({status: 401}); // mrhTODO should this reject
-        }
-      } */
-      return new Response(null, {status: err.status})
-    }
-  }
-
   // Check if file/folder exists and if it does, returns metadata which is kept in a cache
   //
   // Checks if the file (docPath) is in the _fileInfoCache(), and if
@@ -2439,12 +2222,10 @@ logLdp('%s', triples)
   async _getFileInfo (docPath, refreshCache) {
     logLdp('%s._getFileInfo(%s)', this.constructor.name, docPath)
     try {
-debug('safe:getFileInfo')('1')
       if (refreshCache) {
         this._fileInfoCache.delete(docPath)
       }
 
-debug('safe:getFileInfo')('2')
       let fileInfo
       if (docPath !== '/') {
         fileInfo = await this._fileInfoCache.get(docPath)
@@ -2452,22 +2233,14 @@ debug('safe:getFileInfo')('2')
       }
       // Not yet cached or doesn't exist
 
-debug('safe:getFileInfo')('3')
       // Folders //
       let smd = await this.storageMd()
-debug('safe:getFileInfo')('3-A')
-
-      let rootVersion = 1// await window.safeMutableData.getVersion(smd)
-debug('safe:getFileInfo')('3-B')
+      let rootVersion = await window.safeMutableData.getVersion(smd)
       if (docPath === '/') {
-debug('safe:getFileInfo')('3-END')
-
         return { path: docPath, ETag: rootVersion.toString() }
       } // Dummy fileInfo to stop at "root"
 
-debug('safe:getFileInfo')('4')
       if (isFolder(docPath)) {
-        debug('safe:getFileInfo')('5')
         // TODO Could use _getFolder() in order to generate Solid metadata
         var folderInfo = {
           docPath: docPath // Used by _fileInfoCache() but nothing else
@@ -2479,21 +2252,18 @@ debug('safe:getFileInfo')('4')
       // Files //
       let fileHandle
       try {
-debug('safe:getFileInfo')('6')
         fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
         logLdp('_getFileInfo() - fetched fileHandle: %s', fileHandle.toString())
         fileInfo = await this._makeFileInfo(fileHandle, {}, docPath)
-debug('safe:getFileInfo')('7')
       } catch (err) {
         fileInfo = null
       }
       if (fileInfo && fileInfo.openHandle) {
-        debug('safe:getFileInfo')('8')
         await window.safeNfsFile.close(fileInfo.openHandle)
+        delete fileInfo.openHandle
       }
 
       if (fileInfo) {
-        debug('safe:getFileInfo')('9')
         this._fileInfoCache.set(docPath, fileInfo)
         if (fileHandle) {
           window.safeNfs.free(fileHandle)
@@ -2509,7 +2279,6 @@ debug('safe:getFileInfo')('7')
       logApi('_getFileInfo(%s) FAILED: %s', docPath, err)
       throw err
     }
-    debug('safe:getFileInfo')('3-END')
   }
 }
 
