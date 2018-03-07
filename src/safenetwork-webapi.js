@@ -31,8 +31,8 @@
 [/] apply standard formatting (most but not all errors fixed)
 [ ] create RDF response to GET container:
     [/] examine solid-server resonse to Plume get('../posts/')
-    [ ] mimic in _getFolder() to create RDF response
-    [ ] make TODO note to implement this better!
+    [/] implement in _getFolder() to create RDF response
+    [ ] try using different parser if I can (to eliminate $rdf / rdflib.js) (maybe N3?)
 [ ] add basic response headers (links) for each method:
     [ ] note solid-plume looks for 'User' and 'Updates-Via' but my PUT omits both
     (For comprehensive list see node-solid-server/lib/create-app.js)
@@ -110,10 +110,13 @@ const SN_SERVICEID_LDP = 'ldp'
 // TODO temporaty settings to review:
 const ENABLE_ETAGS = true       // false disables ifMatch / ifNoneMatch checks
 
+// rdflib is separated because it is only needed for the Solid service (for $rdf.graph())
+const $rdf = require('rdflib')
+
 // Libs
 const safeUtils = require('./safenetwork-utils')
 const mime = require('mime-types')
-const ns = require('solid-namespace')()
+const ns = require('solid-namespace')($rdf)
 
 /* eslint-disable no-unused-vars */
 const isFolder = safeUtils.isFolder
@@ -1360,9 +1363,6 @@ TODO
  *  HTTP/1.1 Status Code Definitions (https://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html)
  */
 
-// rdflib is separated because it is only needed for the Solid service (for $rdf.graph())
-const $rdf = require('rdflib')
-
 class SafeServiceLDP extends ServiceInterface {
   constructor (safeWeb) {
     super(safeWeb)
@@ -2031,8 +2031,28 @@ logLdp('calling _addListingEntry for %s', itemName)
       .then(async _ => Promise.all(directoryEntries)
       .then(async _ => {
         logLdp('Iteration finished')
-        let triples = await new $rdf.Serializer(rdfGraph).toN3(rdfGraph)
+//        let triples = await new $rdf.Serializer(rdfGraph).toN3(rdfGraph)
 
+        let triples
+        $rdf.serialize(null, rdfGraph, docUri, 'text/turtle',
+          function (err, result) {
+            if (!err) {
+              triples = result
+            } else {
+              throw err
+            }
+          })
+
+logLdp('result of $rdf.serialize(null, rdfGraph, \'safe://solidpoc05/posts/\', \'text/turtle\'):')
+logLdp('%s', triples)
+      $rdf.serialize(null, rdfGraph, docUri, 'application/n-triples',// 'text/turtle',
+        function (err, result) {
+          if (!err) {
+            triples = result
+          } else {
+            throw err
+          }
+        })
         // TODO debugging:
         let jsonString = rdfGraph.toString()
         debug('safe:TMP')('RDF: %s', jsonString)
@@ -2041,7 +2061,6 @@ logLdp('calling _addListingEntry for %s', itemName)
         if (options.includeBody) {
           body = triples
         }
-        body = '<safe://solidpoc05/posts/>    "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"        "http://www.w3.org/ns/ldp#BasicContainer",        "http://www.w3.org/ns/ldp#Container".'
 
         response = new Response(body,
           { status: 200,
@@ -2051,6 +2070,8 @@ logLdp('calling _addListingEntry for %s', itemName)
               'MS-Author-Via': 'SPARQL'
             })
           })
+logLdp('result of $rdf.serialize(null, rdfGraph, \'safe://solidpoc05/posts/\', \'application/n-triples\'):')
+logLdp('%s', triples)
           logLdp('%s._getFolder(\'%s\', ...) response %s: contains %s', this.constructor.name, docUri, response.status, triples)
 
         return response
@@ -2073,12 +2094,14 @@ logLdp('calling _addListingEntry for %s', itemName)
     resourceGraph = await this._addFileInfo(resourceGraph, fullItemUri, fileInfo)
     debug('safe:addListingEntry')('3')
 
+    let predicate =  ns.ldp('contains') // TODO remove debug
+
     // Add to `contains` list
-    await resourceGraph.add(
+    let newTriple = resourceGraph.add(
       resourceGraph.sym(containerUri),
       ns.ldp('contains'),
       resourceGraph.sym(fullItemUri))
-      debug('safe:addListingEntry')('4')
+      debug('safe:addListingEntry')('4 newTriple: %o', newTriple)
 
     // Set up a metaFile path
     // Earlier code used a .ttl file as its own meta file, which
