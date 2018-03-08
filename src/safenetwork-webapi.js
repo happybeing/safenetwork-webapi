@@ -84,7 +84,7 @@ Work In Progress
 [ ] review CORS requirements (relevance to SAFE?): https://github.com/solid/solid-spec/blob/master/recommendations-server.md
 [ ] TODO BUGS:
   [/] publish post shows 404 rather than the post, because app.js fetches a post.url which is different from the saved url (title prefixed with time)
-  [ ] TODO encrypt entries (value + key) in _publicNames
+  [/] TODO encrypt entries (value + key) in _publicNames
       -> add encrypt param to get/set key and listMd()
       -> see https://github.com/maidsafe/safe_examples/blob/2f06aa65025a417a70cf6e93185dbe5ffcb44b9e/web_hosting_manager/app/safenet_comm/api.js#L715
   [ ] TODO safeWeb().isConnected() broken because _isConnected always false (may be fixed if I use rdflib.js SafenetworkWebApi)
@@ -314,15 +314,21 @@ class SafenetworkWebApi {
 
   // Get the key/value of an entry from a mutable data object
   //
-  // This is trivial, but provided to match setMutableDataValue()
+  // Encryption is handled automatically by the DOM APIs
+  // - if the MD is public, they do nothing
+  // - if the MD is private, they encrypt/decrypt using the MD private key
   //
   // @param mdHandle handle of a mutable data, with permission to 'Read'
+  // @param key the key to read
   //
   // @returns a Promise which resolves to a ValueVersion
   async getMutableDataValue (mdHandle, key) {
-    logApi('getMutableDataValue(%s,%s)...', mdHandle, key)
+    logApi('getMutableDataValue(%s,%s,%s)...', mdHandle, key, isEncrypted)
+    let useKey = await window.safeMutableData.encryptKey(mdHandle, key)
     try {
-      return await window.safeMutableData.get(mdHandle, key)
+      let valueVersion = await window.safeMutableData.get(mdHandle, useKey)
+      valueVersion.buf = window.safeMutableData.decrypt(mdHandle, valueVersion.buf)
+      return valueVersion
     } catch (err) {
       logApi("getMutableDataValue() WARNING no entry found for key '%s'", key)
       throw err
@@ -333,6 +339,10 @@ class SafenetworkWebApi {
   //
   // User must be logged in
   // App must have 'Insert'/'Update' permissions as appropriate
+  //
+  // Encryption is handled automatically by the DOM APIs
+  // - if the MD is public, they do nothing
+  // - if the MD is private, they encrypt/decrypt using the MD private key
   //
   // @param mdHandle
   // @param key
@@ -348,9 +358,10 @@ class SafenetworkWebApi {
     logApi('setMutableDataValue(%s,%s,%s,%s)...', mdHandle, key, value, mustNotExist)
     let entry = null
     try {
-      // Check for an existing entry (before creating services MD)
+      // Check for an existing entry
       try {
-        entry = await window.safeMutableData.get(mdHandle, key)
+        let encryptedKey = await window.safeMutableData.encryptKey(mdHandle, key)
+        entry = await window.safeMutableData.get(mdHandle, encryptedKey)
       } catch (err) {}
 
       if (entry && mustNotExist) {
@@ -358,10 +369,14 @@ class SafenetworkWebApi {
       }
 
       let mutationHandle = await window.safeMutableData.newMutation(this.appHandle())
+
+      // Note: these only encrypt if the MD is private
+      let useKey = await window.safeMutableData.encryptKey(mdHandle, key)
+      let useValue = await window.safeMutableData.encryptValue(mdHandle, value)
       if (entry) {
-        await window.safeMutableDataMutation.update(mutationHandle, key, value.version + 1)
+        await window.safeMutableDataMutation.update(mutationHandle, useKey, useValue.version + 1)
       } else {
-        await window.safeMutableDataMutation.insert(mutationHandle, key, value)
+        await window.safeMutableDataMutation.insert(mutationHandle, useKey, useValue)
       }
 
       await window.safeMutableData.applyEntriesMutation(mdHandle, mutationHandle)
@@ -398,9 +413,12 @@ class SafenetworkWebApi {
       let publicNamesMd = await window.safeApp.getContainer(this.appHandle(), '_publicNames')
       let entriesHandle = await window.safeMutableData.getEntries(publicNamesMd)
       let entryKey = this.makePublicNamesEntryKey(publicName)
+      let encryptedKey = await window.safeMutableData.encryptKey(publicNamesMd, entryKey)
+      let valueVersion = await window.safeMutableDataEntries.get(entriesHandle, encryptedKey)
+      valueVersion.buf = await window.safeMutableData.decrypt(publicNamesMd, valueVersion.buf)
       return {
         key: entryKey,
-        valueVersion: await window.safeMutableDataEntries.get(entriesHandle, entryKey)
+        valueVersion: valueVersion
       }
     } catch (err) {
       logApi('getPublicNameEntry() WARNING no _publicNames entry found for: %s', publicName)
@@ -626,7 +644,9 @@ class SafenetworkWebApi {
       let entryKey = this.makePublicNamesEntryKey(publicName)
       let entriesHandle = await window.safeMutableData.getEntries(publicNamesMd)
       let namesMutation = await window.safeMutableDataEntries.mutate(entriesHandle)
-      await window.safeMutableDataMutation.insert(namesMutation, entryKey, servicesMdName)
+      let encryptedKey = await window.safeMutableData.encryptKey(publicNamesMd, entryKey)
+      let encryptedValue = await window.safeMutableData.encryptValue(publicNamesMd, servicesMdName)
+      await window.safeMutableDataMutation.insert(namesMutation, encryptedKey, encryptedValue)
       await window.safeMutableData.applyEntriesMutation(publicNamesMd, namesMutation)
       await window.safeMutableDataMutation.free(namesMutation)
 
@@ -1049,7 +1069,7 @@ class SafenetworkWebApi {
       await this.listContainer('_publicNames')
 
       // Change public name / host for each run (e.g. testname1 -> testname2)
-//      this.test_createPublicNameAndSetupService('testname11','test','ldp')
+//      this.test_createPublicNameAndSetupService('xxx1','test','ldp')
 
       // This requires that the public name of the given host already exists:
 //      this.test_setupServiceOnHost('testname10','ldp')
@@ -1145,15 +1165,30 @@ class SafenetworkWebApi {
 
   async listMd (mdHandle) {
     let entriesHandle = await window.safeMutableData.getEntries(mdHandle)
-    await window.safeMutableDataEntries.forEach(entriesHandle, (k, v) => {
-      logTest('Key: ', k.toString())
-      logTest('Value: ', v.buf.toString())
+    await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
+      let plainKey = k
+      try { plainKey = await window.safeMutableData.decrypt(mdHandle, k) } catch (e) { console.log('Key decryption ERROR: %s', e) }
+      let plainValue = v
+      try { plainValue = await window.safeMutableData.decrypt(mdHandle, v.buf) } catch (e) { console.log('Value decryption ERROR: %s', e) }
+      let enc = new TextDecoder()
+
+      plainKey = enc.decode(new Uint8Array(plainKey))
+      if (plainKey !== k.toString())
+        logTest('Key (encrypted): ', k.toString())
+
+      logTest('Key            : ', plainKey)
+
+      plainValue = enc.decode(new Uint8Array(plainValue))
+      if (plainValue !== v.buf.toString() )
+        logTest('Value (encrypted): ', v.buf.toString())
+
+      logTest('Value            :', plainValue)
+
       logTest('Version: ', v.version)
     })
   }
   // //// END of debugging helpers
 };
-
 /*
  * Service interface template for each service implementation
  *
