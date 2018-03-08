@@ -5,28 +5,31 @@
  *  - application authorisation and connection to SAFE network
  *  - safe:// URIs for any code using window.fetch()
  *  - creation of SAFE network public names and services
- *  - tentative web service implementations for www, Solid
  *  - ability add services or override the default implementations
+ *  - tentative web service implementation for LDP (Solid w/o access control)
+ *    using a very slightly modified rdflib.js (github.cm/theWebalyst/rdflib.js)
  *
  * Prerequisites:
- *  - access to the SAFE browser DOM API
- *  - website / web app must be accessed using a SAFE network aware web browser
- *  - if using MaidSafe Peruse browser, your website/web app must reside at a 'safe://' URI
+ *  - access to the SAFE browser DOM API (e.g. Peruse browser by Maidsafe)
+ *    so typically your website/web app must reside at a 'safe://' URI
  */
 
 /* TODO:
 Solid + SAFE PoC
 ================
 [/]   1. update first PoC (write/read blog by owner only)
+  [/] review how to integrate with rdflib.js (maybe just mod that to allow a protoFetch to be set?)
   [ ] BUG: author avatar image does not display because browser can't access Solid service storage
 [ ]   2. create second PoC (which allows me to write blog, others to read it)
-  [ ] rename LDP to Solid (as I'm following the Solid spec which is based on, not identical to LDP)
   [ ] split serviceinterface and  implementations into separate files
-  [ ] for now: SafeServiceLDP to use www service (and enable service when host profile is 'plume', 'solid' or 'ldp'?)
-  [ ] customise Peruse web fetch to support service 'solid'
-  [ ] submit PR for Peruse to add support for 'solid' service
-  [ ] change  SafenetworkServiceLDP back to service 'solid'
-  [ ] review how to integrate with rdflib.js (maybe just mod that to allow a protoFetch to be set?)
+  [ ] change SafeServiceLDP to use www service (should just work) so browser can access LDP resources
+[ ] validate against LDP test suites:
+    - https://w3c.github.io/ldp-testsuite/
+    - https://github.com/solid/node-solid-server/tree/master/test/integration
+[ ] consider (discuss with Maidsafe?)
+  [ ] customise Peruse web fetch to support service 'ldp'
+  [ ] submit PR for Peruse to add support for 'ldp' service
+  [ ] change  SafenetworkServiceLDP back to service 'ldp'
 [ ] TODO go through todos in the code...
 
 Future
@@ -34,15 +37,11 @@ Future
 [ ] write up what to aim for in terms of access control (is it just MD or also ID?
     try to come up with a Solid compatible way of implementing this with SAFE functinoality
     see: https://forum.safedev.org/t/modelling-file-system-permissions-using-safe-network/1480?u=happybeing
-[ ]   1. implement a simple www service
-[ ]   2. implement RemoteStorage as a SAFE service
+[ ]   1. implement RemoteStorage as a SAFE service
+[ ]   2. implement a simple www WebDav service (similar to LDP?)
 [ ]   3. consider how to implement a file share / URL shortener as a service
 [ ] thorough linting
-[ ] consider adding other web services (e.g. RemoteStorage, WebDav)
-[ ] decide if I should use express.router() (see node-solid-server) in a revised architecture
-[ ] validate against LDP test suites:
-  - https://w3c.github.io/ldp-testsuite/
-  - https://github.com/solid/node-solid-server/tree/master/test/integration
+[ ] consider refactor using express.router() (see node-solid-server) in a revised architecture
 
 Work In Progress
 ----------------
@@ -116,9 +115,6 @@ const debug = require('debug')
 const logApi = require('debug')('safe:web')  // Web API
 const logLdp = require('debug')('safe:ldp')  // LDP service
 const logTest = require('debug')('safe:test')  // Test output
-// TODO remove:
-// oldLog('SUDDENLY oldLog() is %s', 'working!!!!')
-// safeWeb = function () { console.log.apply(null, arguments) } // While oldLog not working...
 
 const SN_TAGTYPE_SERVICES = 15001 // TODO get these from the API CONSTANTS
 const SN_TAGTYPE_WWW = 15002
@@ -127,9 +123,6 @@ const SN_TAGTYPE_WWW = 15002
 // TODO unless or until Peruse can fetch() an LDP service tagtype
 const SN_TAGTYPE_LDP = 80655     // Linked Data Protocol service (timbl's dob)
 const SN_SERVICEID_LDP = 'ldp'
-
-// TODO temporaty settings to review:
-const ENABLE_ETAGS = true       // false disables ifMatch / ifNoneMatch checks
 
 // rdflib is separated because it is only needed for the Solid service (for $rdf.graph())
 const $rdf = require('rdflib')
@@ -218,7 +211,6 @@ class SafenetworkWebApi {
     this._authOnAccessDenied = false  // Used by simpleAuthorise() and fetch()
 
     // Application specific configuration required for authorisation
-    // TODO how is this set?
     this._safeAppConfig = {}
     this._safeAppPermissions = {}
 
@@ -610,7 +602,7 @@ class SafenetworkWebApi {
       logApi('DEBUG created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)))
 
       let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle())
-// TODO NEXT...
+
       // TODO review this with Web Hosting Manager (separate into a make or init servicesMd function)
       // TODO clarify what setting these permissions does - and if it means user can modify with another app (e.g. try with WHM)
       let pmSet = ['Read', 'Update', 'Insert', 'Delete', 'ManagePermissions']
@@ -986,8 +978,6 @@ class SafenetworkWebApi {
   //
   async fetch (docUri, options) {
     logApi('%s.fetch(%s,%o)...', this.constructor.name, docUri, options)
-    // TODO remove:
-//    return httpFetch(docUri,options) // TESTING so pass through
 
     let allowAuthOn401 = false // TODO reinstate: true
     try {
@@ -1679,7 +1669,7 @@ class SafeServiceLDP extends ServiceInterface {
       }
 
       var etagWithoutQuotes = (typeof (fileInfo.ETag) === 'string' ? fileInfo.ETag : undefined)
-      if (ENABLE_ETAGS && options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
+      if (options && options.ifMatch && (options.ifMatch !== etagWithoutQuotes)) {
         return new Response(null, {status: 412, revision: etagWithoutQuotes})
       }
 
@@ -1831,7 +1821,7 @@ class SafeServiceLDP extends ServiceInterface {
 
       var etagWithoutQuotes = fileInfo.ETag
       // Request is for changed file, so if eTag matches return "304 Not Modified"
-      if (ENABLE_ETAGS && options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
+      if (options && options.ifNoneMatch && etagWithoutQuotes && (etagWithoutQuotes === options.ifNoneMatch)) {
         return new Response(null, {status: 304, statusText: '304 Not Modified'})
       }
 
