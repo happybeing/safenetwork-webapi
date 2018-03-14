@@ -118,11 +118,14 @@ const logTest = require('debug')('safe:test')  // Test output
 
 const SN_TAGTYPE_SERVICES = 15001 // TODO get these from the API CONSTANTS
 const SN_TAGTYPE_WWW = 15002
+const SN_SERVICEID_WWW = 'www'
 
-// TODO We might want to change SN_TAGTYPE_LDP to SN_TAGTYPE_WWW so that www fetch() works w/o this library,
-// TODO unless or until Peruse can fetch() an LDP service tagtype
-const SN_TAGTYPE_LDP = 80655     // Linked Data Protocol service (timbl's dob)
-const SN_SERVICEID_LDP = 'ldp'
+// TODO SN_TAGTYPE_LDP is set to SN_TAGTYPE_WWW so that browser fetch() works, and
+// TODO apps using window.webFetch() will work as expected w/o this library,
+// TODO unless or until Peruse can fetch() an LDP service tagtype (of 80655 = timbl's dob).
+const SN_TAGTYPE_LDP = SN_TAGTYPE_WWW
+const SN_SERVICEID_LDP = 'www'  // First try 'www' to test compat with other apps (eg Web Hosting Manager)
+                                // TODO then try out 'ldp'
 
 // rdflib is separated because it is only needed for the Solid service (for $rdf.graph())
 const $rdf = require('rdflib')
@@ -958,13 +961,17 @@ class SafenetworkWebApi {
 
   // Helper to create the key for looking up the service installed on a host
   //
-  // TODO ensure hostProfile is valid before attempting (eg lowercase, no illegal chars)
+  // TODO ensure hostProfile is valid before attempting (eg lowercase, no illegal chars such as '@')
   //
   // @param hostProfile prefix of a host address, which is [profile.]public-name
   // @param serviceId
   //
   // @returns the key as a string, corresponding to a service entry in a servicesMD
   makeServiceEntryKey (hostProfile, serviceId) {
+    if (serviceId === SN_SERVICEID_WWW) {
+      return (hostProfile & hostProfile.length > 0 ? hostProfile : 'www')
+    }
+
     return (hostProfile + '@' + serviceId)
   }
 
@@ -1168,7 +1175,7 @@ class SafenetworkWebApi {
     await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
       let plainKey = k
       try { plainKey = await window.safeMutableData.decrypt(mdHandle, k) } catch (e) { console.log('Key decryption ERROR: %s', e) }
-      let plainValue = v
+      let plainValue = v.buf
       try { plainValue = await window.safeMutableData.decrypt(mdHandle, v.buf) } catch (e) { console.log('Value decryption ERROR: %s', e) }
       let enc = new TextDecoder()
 
@@ -1320,7 +1327,7 @@ class SafeServiceWww extends ServiceInterface {
       setupDefaults: {
         setupNfsContainer: true,        // Automatically create a file store for this host
         defaultRootContainer: '_public',  // ...in container (e.g. _public, _documents, _pictures etc.)
-        defaultContainerName: 'root-www' // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
+        defaultContainerName: 'root-' + SN_SERVICEID_WWW // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
       },
 
       // Don't change this unless you are defining a brand new service
@@ -1421,7 +1428,7 @@ class SafeServiceLDP extends ServiceInterface {
       setupDefaults: {
         setupNfsContainer: true,        // Automatically create a file store for this host
         defaultRootContainer: '_public',  // ...in container (e.g. _public, _documents, _pictures etc.)
-        defaultContainerName: 'root-ldp' // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
+        defaultContainerName: 'root-' + SN_SERVICEID_LDP // ...container key: 'root-www' implies key of '_public/<public-name>/root-www'
       },
 
       // SAFE Network Service Identity
@@ -1546,7 +1553,7 @@ class SafeServiceLDP extends ServiceInterface {
 
   // Get the NFSHandle of the service's storage container
   //
-  // @returns a promise which resolves to the NHSHandle
+  // @returns a promise which resolves to the NfsHandle
   async storageNfs () {
     if (this._storageNfsHandle) { return this._storageNfsHandle }
 
@@ -2273,15 +2280,16 @@ logLdp('calling _addListingEntry for %s', itemName)
 
       // Folders //
       let smd = await this.storageMd()
-      let rootVersion = await window.safeMutableData.getVersion(smd)
+      let containerVersion = await window.safeMutableData.getVersion(smd)
       if (docPath === '/') {
-        return { path: docPath, ETag: rootVersion.toString() }
+        return { path: docPath, ETag: containerVersion.toString() }
       } // Dummy fileInfo to stop at "root"
 
       if (isFolder(docPath)) {
         // TODO Could use _getFolder() in order to generate Solid metadata
         var folderInfo = {
-          docPath: docPath // Used by _fileInfoCache() but nothing else
+          docPath: docPath, // Used by _fileInfoCache() but nothing else
+          'containerVersion': containerVersion
         }
         this._fileInfoCache.set(docPath, folderInfo)
         return folderInfo
@@ -2293,6 +2301,7 @@ logLdp('calling _addListingEntry for %s', itemName)
         fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
         logLdp('_getFileInfo() - fetched fileHandle: %s', fileHandle.toString())
         fileInfo = await this._makeFileInfo(fileHandle, {}, docPath)
+        fileInfo.containerVersion = containerVersion
       } catch (err) {
         fileInfo = null
       }
