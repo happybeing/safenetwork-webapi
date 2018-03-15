@@ -232,6 +232,17 @@ class SafenetworkWebApi {
   }
 
   /*
+   * Local helpers
+   */
+  nfsPathPart (docUri) {
+    let pathPart = this.pathpart(docUri)
+    if (pathPart[0] === '/') {
+      pathPart = pathPart.slice(1)  // safeNfs entries don't allow a leading '/'
+    }
+    return pathPart
+  }
+
+  /*
    * Application API - authorisation with SAFE network
    */
 
@@ -884,7 +895,6 @@ class SafenetworkWebApi {
             this.hostedService = newHostedService
           } else {
             let errMsg = "WARNING service '" + serviceId + "' is setup on '" + host + "' but no implementation is available"
-            throw new Error(errMsg)
           }
         }
       })
@@ -1033,6 +1043,7 @@ class SafenetworkWebApi {
     logApi('%s._fetch(%s,%o)', this.constructor.name, docUri, options)
 
     let response
+    options = options || {}
     try {
       let service = await this.getServiceForUri(docUri)
 
@@ -1702,7 +1713,7 @@ class SafeServiceLDP extends ServiceInterface {
 
   async delete (docUri, options) {
     logLdp('%s.delete(%s,%O)', this.constructor.name, docUri, options)
-    let docPath = pathpart(docUri)
+    let docPath = this.safeWeb().nfsPathPart(docUri)
 
     try {
       let fileInfo = await this._getFileInfo(pathpart(docUri))
@@ -1761,7 +1772,7 @@ class SafeServiceLDP extends ServiceInterface {
   // @returns promise which resolves to a Resonse object
   async _updateFile (docUri, body, contentType, options) {
     logLdp('%s._updateFile(\'%s\',%O,%o,%O)', this.constructor.name, docUri, body, contentType, options)
-    let docPath = pathpart(docUri)
+    let docPath = this.safeWeb().nfsPathPart(docUri)
 
     try {
       // mrhTODO GoogleDrive only I think:
@@ -1809,14 +1820,18 @@ class SafeServiceLDP extends ServiceInterface {
   // TODO add header links addLinks() - see node-solid-server/lib/handlers/post.js function one ()
   async _createFile (docUri, body, contentType, options) {
     logLdp('%s._createFile(\'%s\',%O,%o,%O)', this.constructor.name, docUri, body, contentType, options)
-    let docPath = pathpart(docUri)
+    let docPath = this.safeWeb().nfsPathPart(docUri)
 
     try {
+      logLdp('DEBUG:  window.safeNfs.create()...')
       let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
       // mrhTODOx set file metadata (contentType) - how?
 
       // Add file to directory (by inserting fileHandle into container)
+      logLdp('DEBUG:  window.safeNfs.insert(nfsHandle,fileHandle,%s)...',docPath)
       fileHandle = await window.safeNfs.insert(await this.storageNfs(), fileHandle, docPath)
+
+      logLdp('DEBUG:  this._updateFileInfo(...)...')
       this._updateFileInfo(fileHandle, docPath)
 
       // TODO implement LDP POST response https://www.w3.org/TR/ldp-primer/
@@ -1841,7 +1856,7 @@ class SafeServiceLDP extends ServiceInterface {
   // TODO add support for data browser node-solid-server/lib/handlers/get.js
   async _getFile (docUri, options) {
     logLdp('%s._getFile(%s,%O)', this.constructor.name, docUri, options)
-    let docPath = pathpart(docUri)
+    let docPath = this.safeWeb().nfsPathPart(docUri)
     let fileInfo = {}
     let fileHandle
     let retResponse
@@ -1853,6 +1868,7 @@ class SafeServiceLDP extends ServiceInterface {
       // TODO If the options are being used to retrieve specific version
       // should we get the latest version from the API first?
       try {
+        logLdp('window.safeNfs.fetch(nfsHandle,%s)...', docPath)
         fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
         logLdp('fetched fileHandle: %s', fileHandle.toString())
         fileInfo = await this._makeFileInfo(fileHandle, fileInfo, docPath)
@@ -1952,7 +1968,7 @@ class SafeServiceLDP extends ServiceInterface {
 
   async _getFolder (docUri, options) {
     logLdp('%s._getFolder(%s,%O)', this.constructor.name, docUri, options)
-    let docPath = pathpart(docUri)
+    let docPath = this.safeWeb().nfsPathPart(docUri)
     let response
 
     // TODO delete this
