@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo No lib tests",
     "build": "webpack  --verbose --colors --config webpack.config.js",
-    "dev": "webpack  --verbose --colors --config webpack.config.js"
+    "dev": "webpack  --watch --verbose --colors --config webpack.config.js"
   },
   "repository": {
     "type": "git",
