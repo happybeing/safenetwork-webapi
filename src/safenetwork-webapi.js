@@ -25,6 +25,7 @@ Solid + SAFE PoC
   [/] early version now working tagged safe-v0.06
   [ ] rename this library from solid-safenetwork to safenetwork-webapi
   [ ] plume Login/auth: modify to use Solid method for http: appURL and SAFE if safe: appURL
+  [ ] plume: provide config-example.json and instructions for safe: and http: (Solid) deployments
   [ ] review my fetch - should it throw on 404 etc? (as OLD Solid.web.put())
     [ ] if not, review behaviour of Solid.web.put() implementations and rdflib.js
     [ ] if yes, update my fetch and all uses to handle errors properly
@@ -75,7 +76,7 @@ Work In Progress
     [ ] look into differences (see zim comparisson solid server versus my turtle):
         - missing 'posts:'
         - each RDF resource is missing 'ldp:Resource'
-        - modifiedis  missing '^^XML:dateTime'
+        - modified is  missing '^^XML:dateTime'
     [ ] try using different parser if I can (to eliminate $rdf / rdflib.js) (maybe N3?)
 [ ] add basic response headers (links) for each method:
     [ ] note solid-plume looks for 'User' and 'Updates-Via' but my PUT omits both
@@ -103,8 +104,9 @@ SafenetworkWebApi
 -----------------
 [ ] provide documentation README.md for github
   [ ] mandate standard.js for all pull contributions
+  [ ] add minified build of safenetwork-webapi
   [ ] implement a documentation build (based on source)
-[ ] rename the github repo to be safenetwork-web-api
+[ ] rename the github repo to be safenetwork-webapi
 [ ] add further APIs:
   [ ] Nfs file API for www and solid services: create/update/delete
   [ ] review public name and service creation for ease of use
