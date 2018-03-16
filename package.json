@@ -1,20 +1,22 @@
 {
-  "name": "solid-safenetwork",
+  "name": "safenetwork-webapi",
   "version": "0.0.1",
-  "description": "SafeNetwork backend for SOLID applications (LDP interface via either RESTful operations or fetch() shim)",
+  "description": "SafeNetwork Web API for services (RESTful in the client using fetch())",
   "main": "index.js",
   "scripts": {
     "test": "echo No lib tests",
-    "build": "webpack  --verbose --colors --config webpack.config.js"
+    "build": "webpack  --verbose --colors --config webpack.config.js",
+    "dev": "webpack  --verbose --colors --config webpack.config.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thewebalyst/solid-safenetwork.git"
+    "url": "git+https://github.com/thewebalyst/safenetwork-webapi.git"
   },
   "keywords": [
     "SOLID",
     "LinkedData",
     "LDP",
+    "REST",
     "SafeNetwork",
     "library",
     "JavaScript",
@@ -23,9 +25,9 @@
   "author": "Mark Hughes",
   "license": "GPL-3.0",
   "bugs": {
-    "url": "https://github.com/thewebalyst/solid-safenetwork/issues"
+    "url": "https://github.com/thewebalyst/safenetwork-webapi/issues"
   },
-  "homepage": "https://github.com/thewebalyst/solid-safenetwork#readme",
+  "homepage": "https://github.com/thewebalyst/safenetwork-webapi#readme",
   "devDependencies": {
     "webpack": "^3.8.1"
   },
