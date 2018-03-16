@@ -19,23 +19,31 @@ Solid + SAFE PoC
 ================
 [/]   1. update first PoC (write/read blog by owner only)
   [/] review how to integrate with rdflib.js (maybe just mod that to allow a protoFetch to be set?)
-  [ ] BUG: author avatar image does not display because browser can't access Solid service storage
+  [/] BUG: author avatar image does not display because browser can't access Solid service storage
+      -> workaround is to use www service instead of ldp for now
 [ ]   2. create second PoC (which allows me to write blog, others to read it)
+  [/] early version now working tagged safe-v0.06
+  [ ] rename this library from solid-safenetwork to safenetwork-webapi
+  [ ] plume Login/auth: modify to use Solid method for http: appURL and SAFE if safe: appURL
+  [ ] review my fetch - should it throw on 404 etc? (as OLD Solid.web.put())
+    [ ] if not, review behaviour of Solid.web.put() implementations and rdflib.js
+    [ ] if yes, update my fetch and all uses to handle errors properly
   [ ] split serviceinterface and  implementations into separate files
-  [ ] change SafeServiceLDP to use www service (should just work) so browser can access LDP resources
+  [/] change SafeServiceLDP to use www service (should just work) so browser can access LDP resources
+[ ]   3. plume: Add support for safe: appURL "Deploy blog" which creates pub id and copies web app to it
 [ ] validate against LDP test suites:
     - https://w3c.github.io/ldp-testsuite/
     - https://github.com/solid/node-solid-server/tree/master/test/integration
 [ ] consider (discuss with Maidsafe?)
-  [ ] customise Peruse web fetch to support service 'ldp'
-  [ ] submit PR for Peruse to add support for 'ldp' service
+  [ ] customise Peruse web fetch to support service 'ldp', or always assume safe NFS as a default
+  [ ] submit PR for Peruse to add safeNfs/www style support to webFetch for ldp/other services
   [ ] change  SafenetworkServiceLDP back to service 'ldp'
 [ ] TODO go through todos in the code...
 
 Future
 ======
-[ ] write up what to aim for in terms of access control (is it just MD or also ID?
-    try to come up with a Solid compatible way of implementing this with SAFE functinoality
+[ ] write up what to aim for in terms of access control (see link below)
+    try to come up with a Solid compatible way of implementing this with SAFE functionality
     see: https://forum.safedev.org/t/modelling-file-system-permissions-using-safe-network/1480?u=happybeing
 [ ]   1. implement RemoteStorage as a SAFE service
 [ ]   2. implement a simple www WebDav service (similar to LDP?)
@@ -536,7 +544,7 @@ class SafenetworkWebApi {
     try {
       // Check the container does not yet exist
       let rootMd = await window.safeApp.getContainer(this.appHandle(), rootContainer)
-      let rootKey = '/' + rootContainer + '/' + publicName + '/' + containerName
+      let rootKey = rootContainer + '/' + publicName + '/' + containerName
 
       // Check the public container doesn't already exist
       let existingValue = null
@@ -952,7 +960,7 @@ class SafenetworkWebApi {
   //
   // @returns the key as a string, corresponding to the public name's entry in _publicNames
   makePublicNamesEntryKey (publicName) {
-    return '_publicNames/' + publicName
+    return publicName
   }
 
   /*
@@ -2064,7 +2072,7 @@ logLdp('calling _addListingEntry for %s', itemName)
 
         response = new Response(body,
           { status: 200,
-            statusText: 'OKey dokey',
+            statusText: 'OK',
             headers: new Headers({
               'Content-Type': 'text/turtle',
               'MS-Author-Via': 'SPARQL'
@@ -2279,8 +2287,12 @@ logLdp('calling _addListingEntry for %s', itemName)
   // fileInfo objects)
   //
   // TODO ??? implement version param - check if anything needs this first?
-  // TODO ??? implement Solid metadata for folders (Solid uses stat())
+  // TODO ??? implement Solid metadata for folders (Solid uses stat()) (note nfs MDs have metadata in the _metadata key)
   async _getFileInfo (docPath, refreshCache) {
+    if (docPath[0] !== '/') {
+      docPath = '/' + docPath
+    }
+
     logLdp('%s._getFileInfo(%s)', this.constructor.name, docPath)
     try {
       if (refreshCache) {
@@ -2314,7 +2326,8 @@ logLdp('calling _addListingEntry for %s', itemName)
       // Files //
       let fileHandle
       try {
-        fileHandle = await window.safeNfs.fetch(await this.storageNfs(), docPath)
+        let nfsPath = docPath.slice(1)
+        fileHandle = await window.safeNfs.fetch(await this.storageNfs(), nfsPath)
         logLdp('_getFileInfo() - fetched fileHandle: %s', fileHandle.toString())
         fileInfo = await this._makeFileInfo(fileHandle, {}, docPath)
         fileInfo.containerVersion = containerVersion
