@@ -23,7 +23,7 @@ Solid + SAFE PoC
       -> workaround is to use www service instead of ldp for now
 [ ]   2. create second PoC (which allows me to write blog, others to read it)
   [/] early version now working tagged safe-v0.06
-  [ ] rename this library from solid-safenetwork to safenetwork-webapi
+  [/] rename this library from solid-safenetwork to safenetwork-webapi
   [ ] plume Login/auth: modify to use Solid method for http: appURL and SAFE if safe: appURL
   [ ] plume: provide config-example.json and instructions for safe: and http: (Solid) deployments
   [ ] review my fetch - should it throw on 404 etc? (as OLD Solid.web.put())
