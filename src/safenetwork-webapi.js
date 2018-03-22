@@ -178,6 +178,13 @@ const getBaseUri = safeUtils.getBaseUri
  *
  */
 
+// For connection without authorisation (see initReadOnly)
+const untrustedAppConfig = {
+  id: 'Untrusted',
+  name: 'Do NOT authorise this app',
+  vendor: 'Untrusted'
+}
+
 // Default permissions to request. Optional parameter to SafenetworkWebApi.simpleAuthorise()
 //
 const defaultPerms = {
@@ -220,7 +227,7 @@ class SafenetworkWebApi {
 
     // DOM API settings and and authorisation status
     this._safeAuthUri = ''
-    this._isConnected = true // TODO bugchase (should be set false here)
+    this._isConnected = false
     this._isAuthorised = false
     this._authOnAccessDenied = false  // Used by simpleAuthorise() and fetch()
 
@@ -280,11 +287,12 @@ class SafenetworkWebApi {
   // - if authorising using another method, you MUST call SafenetworkWebApi.setApi()
   //   with a valid SAFEAppHandle
   //
-  // @param appConfig      - information for auth UI - see DOM API window.safeApp.initialise()
+  // @param [optional] appConfig - information for auth UI, if ommitted generic
+  //                - see DOM API window.safeApp.initialise()
   //
   // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
   //
-  async initReadOnly(appConfig) {
+  async initReadOnly (appConfig = untrustedAppConfig) {
     logApi('%s.initReadOnly(%O)...', this.constructor.name, appConfig)
 
     let tmpAppHandle
@@ -303,44 +311,6 @@ class SafenetworkWebApi {
       await window.safeApp.connect(tmpAppHandle)
       logApi('SAFEApp was initialise with a read-only session on the SafeNetwork')
       this._isConnected = true // TODO to remove (see https://github.com/maidsafe/beaker-plugin-safe-app/issues/123)
-      return this._appHandle
-    } catch (err) {
-      logApi('WARNING: ', err)
-      throw (err)
-    }
-  }
-
-  // Authorise after establishing a read-only connection via initReadOnly
-  //
-  // See initReadOnly() for more information
-  //
-  // @param appConfig      - information for auth UI - see DOM API window.safeApp.initialise()
-  // @param appPermissions - (optional) requested permissions - see DOM API window.safeApp.authorise()
-  //
-  // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
-  //
-  async authAfterInit(appPermissions) {
-    logApi('%s.authAfterInit(%O)...', this.constructor.name, appPermissions)
-
-    this._authOnAccessDenied = true // Enable auth inside SafenetworkWebApi.fetch() on 401
-
-    if (!this._isConnected || this._isAuthorised) {
-      throw new Error('authAfterInit() must be called following a successful initReadOnly()')
-    }
-
-    let tmpAppHandle = this._appHandle
-    this._appHandle = null
-    try {
-      this._safeAppPermissions = (appPermissions !== undefined ? appPermissions : defaultPerms)
-
-      this._safeAuthUri = await window.safeApp.authorise(tmpAppHandle, this._safeAppPermissions, this._safeAppConfig.options)
-      logApi('SAFEApp was authorised and authUri received: ', this._safeAuthUri)
-
-      await window.safeApp.connectAuthorised(tmpAppHandle, this._safeAuthUri)
-      logApi('SAFEApp was authorised & a session was created with the SafeNetwork')
-      await this.testsAfterAuth()  // TODO remove (for test only)
-      this.setSafeApi(tmpAppHandle)
-      this._isAuthorised = true
       return this._appHandle
     } catch (err) {
       logApi('WARNING: ', err)
