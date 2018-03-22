@@ -48519,7 +48519,7 @@ const defaultPerms = {
   }
 
   initialise() {
-    // TODO implement delete any active services
+    // TODO implement delete any active services (and their handles)
 
     // SAFE Network Services
     this._activeServices = new Map(); // Map of host (profile.public-name) to a service instance
@@ -48575,7 +48575,86 @@ const defaultPerms = {
     this._appHandle = appHandle; // SAFE API application handle
   }
 
-  // Simplified authorisation with SAFE network
+  // Read only connection with SAFE network (can authorise later)
+  //
+  // Before you can use the SafenetworkWebApi methods, you must init and connect
+  // with SAFE network. This function provides *read-only* init and connect, but
+  // you can authorise subsequently using authAfterInit(), or directly with the
+  // DOM API.
+  //
+  // - if using this method you don't need to do anything with the returned SAFEAppHandle
+  // - if authorising using another method, you MUST call SafenetworkWebApi.setApi()
+  //   with a valid SAFEAppHandle
+  //
+  // @param appConfig      - information for auth UI - see DOM API window.safeApp.initialise()
+  //
+  // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
+  //
+  async initReadOnly(appConfig) {
+    logApi('%s.initReadOnly(%O)...', this.constructor.name, appConfig);
+
+    let tmpAppHandle;
+    try {
+      tmpAppHandle = await window.safeApp.initialise(appConfig, newState => {
+        // Callback for network state changes
+        logApi('SafeNetwork state changed to: ', newState);
+        this._isConnected = newState; // TODO bugchase
+      });
+
+      logApi('SAFEApp instance initialised and appHandle returned: ', tmpAppHandle);
+      this.setSafeApi(tmpAppHandle);
+      this._safeAppConfig = appConfig;
+      this._safeAppPermissions = undefined;
+
+      await window.safeApp.connect(tmpAppHandle);
+      logApi('SAFEApp was initialise with a read-only session on the SafeNetwork');
+      this._isConnected = true; // TODO to remove (see https://github.com/maidsafe/beaker-plugin-safe-app/issues/123)
+      return this._appHandle;
+    } catch (err) {
+      logApi('WARNING: ', err);
+      throw err;
+    }
+  }
+
+  // Authorise after establishing a read-only connection via initReadOnly
+  //
+  // See initReadOnly() for more information
+  //
+  // @param appConfig      - information for auth UI - see DOM API window.safeApp.initialise()
+  // @param appPermissions - (optional) requested permissions - see DOM API window.safeApp.authorise()
+  //
+  // @returns a DOM API SAFEAppHandle, see window.safeApp.initialise()
+  //
+  async authAfterInit(appPermissions) {
+    logApi('%s.authAfterInit(%O)...', this.constructor.name, appPermissions);
+
+    this._authOnAccessDenied = true; // Enable auth inside SafenetworkWebApi.fetch() on 401
+
+    if (!this._isConnected || this._isAuthorised) {
+      throw new Error('authAfterInit() must be called following a successful initReadOnly()');
+    }
+
+    let tmpAppHandle = this._appHandle;
+    this._appHandle = null;
+    try {
+      this._safeAppPermissions = appPermissions !== undefined ? appPermissions : defaultPerms;
+
+      this._safeAuthUri = await window.safeApp.authorise(tmpAppHandle, this._safeAppPermissions, this._safeAppConfig.options);
+      logApi('SAFEApp was authorised and authUri received: ', this._safeAuthUri);
+
+      await window.safeApp.connectAuthorised(tmpAppHandle, this._safeAuthUri);
+      logApi('SAFEApp was authorised & a session was created with the SafeNetwork');
+      await this.testsAfterAuth(); // TODO remove (for test only)
+      this.setSafeApi(tmpAppHandle);
+      this._isAuthorised = true;
+      return this._appHandle;
+    } catch (err) {
+      logApi('WARNING: ', err);
+      throw err;
+    }
+  }
+
+  // Simplified one-step authorisation with SAFE network (init, auth and connect)
   //
   // Before you can use the SafenetworkWebApi methods, you must authorise your application
   // with SAFE network. This function provides simplified, one step authorisation, but
@@ -48609,26 +48688,25 @@ const defaultPerms = {
         this._isConnected = newState; // TODO bugchase
       });
 
-      this._isConnected = true; // TODO to remove (see https://github.com/maidsafe/beaker-plugin-safe-app/issues/123)
       logApi('SAFEApp instance initialised and appHandle returned: ', tmpAppHandle);
       this.setSafeApi(tmpAppHandle);
+      this._isConnected = true; // TODO to remove (see https://github.com/maidsafe/beaker-plugin-safe-app/issues/123)
       this._safeAppConfig = appConfig;
       this._safeAppPermissions = appPermissions !== undefined ? appPermissions : defaultPerms;
 
-      // this.testsNoAuth();  // TODO remove (for test only)
+      // await this.testsNoAuth();  // TODO remove (for test only)
       this._safeAuthUri = await window.safeApp.authorise(tmpAppHandle, this._safeAppPermissions, this._safeAppConfig.options);
       logApi('SAFEApp was authorised and authUri received: ', this._safeAuthUri);
 
       await window.safeApp.connectAuthorised(tmpAppHandle, this._safeAuthUri);
       logApi('SAFEApp was authorised & a session was created with the SafeNetwork');
+      await this.testsAfterAuth(); // TODO remove (for test only)
       this._isAuthorised = true;
-      this.testsAfterAuth(); // TODO remove (for test only)
-      return tmpAppHandle;
+      return this._appHandle;
     } catch (err) {
       logApi('WARNING: ', err);
+      throw err;
     }
-
-    return tmpAppHandle;
   }
 
   // For access to SAFE API:
@@ -48888,6 +48966,18 @@ const defaultPerms = {
       await window.safeMutableData.put(mdHandle, pmHandle, entriesHandle);
       let nameAndTag = await window.safeMutableData.getNameAndTag(mdHandle);
 
+      // TODO remove this block:
+      logLdp('DEBUG testing newly created service container, mdHandle: %s', mdHandle);
+      // TODO BUG subfolder: try with 'posts/rand/', to chase bug in _getFolder() where we have a subfolder
+      let randText = 'posts/' + Date.now();
+      logLdp('DEBUG try insert a random filename', randText);
+      let nfsHandle = await window.safeMutableData.emulateAs(mdHandle, 'NFS');
+      logLdp('DEBUG 1 - create a file...');
+      let fileHandle = await window.safeNfs.create(nfsHandle, randText);
+      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle);
+      await window.safeNfs.insert(nfsHandle, fileHandle, randText);
+      logLdp('...done.');
+
       // Create an entry in rootContainer (fails if key exists for this container)
       await this.setMutableDataValue(rootMd, rootKey, nameAndTag.name.buffer);
       window.safeMutableData.free(mdHandle);
@@ -48999,9 +49089,9 @@ const defaultPerms = {
       logApi('DEBUG _publicNames entry created for %s', publicName);
 
       logApi('DEBUG servicesMd for public name \'%s\' contains...', publicName);
-      await this.listMd(servicesMd);
+      await this.listMd(servicesMd, publicName + ' servicesMd');
       logApi('DEBUG _publicNames MD contains...');
-      await this.listMd(publicNamesMd);
+      await this.listMd(publicNamesMd, '_publicNames MD');
 
       return {
         key: entryKey,
@@ -49028,11 +49118,12 @@ const defaultPerms = {
   //
   // @returns a promise which resolves true if the Mutable Data exists
   async mutableDataExists(mdHandle) {
-    logApi('mutableDataExists(%s)', mdHandle);
     try {
       await window.safeMutableData.getVersion(mdHandle);
+      logApi('mutableDataExists(%s) TRUE', mdHandle);
       return true;
     } catch (err) {
+      logApi('mutableDataExists(%s) FALSE', mdHandle);
       return false; // Error indicates this MD doens't exist on the network
     }
   }
@@ -49444,7 +49535,7 @@ const defaultPerms = {
     let servicesMd = await this.getServicesMdFor(name);
     if (servicesMd) {
       logTest("servicesMd for public name '%s' contains...", name);
-      await this.listMd(servicesMd);
+      await this.listMd(servicesMd, name + ' services MD');
 
       let serviceInterface = await this.getServiceImplementation(serviceId);
       let host = profile + '.' + name;
@@ -49457,7 +49548,7 @@ const defaultPerms = {
       this.setActiveService(host, hostedService);
 
       logTest("servicesMd for public name '%s' contains...", name);
-      await this.listMd(servicesMd);
+      await this.listMd(servicesMd, name + ' services MD');
     }
 
     await this.listHostedServices();
@@ -49505,12 +49596,13 @@ const defaultPerms = {
     logTest('listContainer(%s)...', containerName);
     logTest(containerName + ' ----------- start ----------------');
     let mdHandle = await window.safeApp.getContainer(this.appHandle(), containerName);
-    await this.listMd(mdHandle);
+    await this.listMd(mdHandle, containerName);
     logTest(containerName + '------------ end -----------------');
   }
 
-  async listMd(mdHandle) {
+  async listMd(mdHandle, name) {
     let entriesHandle = await window.safeMutableData.getEntries(mdHandle);
+    logTest('list mdHandle: %s', mdHandle);
     await window.safeMutableDataEntries.forEach(entriesHandle, async (k, v) => {
       let plainKey = k;
       try {
@@ -49527,16 +49619,16 @@ const defaultPerms = {
       let enc = new TextDecoder();
 
       plainKey = enc.decode(new Uint8Array(plainKey));
-      if (plainKey !== k.toString()) logTest('Key (encrypted): ', k.toString());
+      if (plainKey !== k.toString()) logTest('%s Key (encrypted): ', name, k.toString());
 
-      logTest('Key            : ', plainKey);
+      logTest('%s Key            : ', name, plainKey);
 
       plainValue = enc.decode(new Uint8Array(plainValue));
-      if (plainValue !== v.buf.toString()) logTest('Value (encrypted): ', v.buf.toString());
+      if (plainValue !== v.buf.toString()) logTest('%s Value (encrypted): ', name, v.buf.toString());
 
-      logTest('Value            :', plainValue);
+      logTest('%s Value            :', name, plainValue);
 
-      logTest('Version: ', v.version);
+      logTest('%s Version: ', name, v.version);
     });
   }
   // //// END of debugging helpers
@@ -49879,7 +49971,7 @@ class SafeServiceLDP extends ServiceInterface {
       await this.safeWeb().setMutableDataValue(servicesMd, serviceKey, serviceValue);
       // TODO remove this excess DEBUG:
       logLdp('Pubic name \'%s\' services:', publicName);
-      await this.safeWeb().listMd(servicesMd);
+      await this.safeWeb().listMd(servicesMd, publicName + ' public name MD');
     }
     return serviceValue;
   }
@@ -49921,6 +50013,15 @@ class SafeServiceLDP extends ServiceInterface {
     logLdp('storageNfs()');
     try {
       this._storageNfsHandle = await window.safeMutableData.emulateAs((await this.storageMd()), 'NFS');
+      logLdp('DEBUG this.storageMd: %s', (await this.storageMd()));
+      logLdp('DEBUG this._storageNfsHandle: %s', this._storageNfsHandle);
+      let randText = 'rand/' + Date.now();
+      logLdp('DEBUG try insert a random filename', randText);
+      logLdp('DEBUG 1 - create a file...');
+      let fileHandle = await window.safeNfs.create(this._storageNfsHandle, randText);
+      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle);
+      await window.safeNfs.insert(this._storageNfsHandle, fileHandle, randText);
+      logLdp('...done.');
       return this._storageNfsHandle;
     } catch (err) {
       logLdp('Unable to access NFS storage for %s service: %s', this.getName(), err);
@@ -49936,15 +50037,16 @@ class SafeServiceLDP extends ServiceInterface {
       return this._storageMd;
     }
 
-    logLdp('storageMd()');
     try {
       // The service value is the address of the storage container (Mutable Data)
       this._storageMd = await window.safeMutableData.newPublic(this.appHandle(), this.getServiceValue().buf, this.getTagType());
-      // TODO remove this validity check:
+      // TODO remove this existence check:
       await window.safeMutableData.getVersion(this._storageMd);
+
+      logLdp('storageMd() - set: %s', this._storageMd);
       return this._storageMd;
     } catch (err) {
-      logLdp('Unable to access Mutable Data for %s service: %s', this.getName(), err);
+      logLdp('storageMd() - Unable to access Mutable Data for %s service: %s', this.getName(), err);
       throw err;
     }
   }
