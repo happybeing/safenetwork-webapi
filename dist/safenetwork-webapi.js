@@ -48406,6 +48406,7 @@ Work In Progress
   [ ] TODO safeWeb().isConnected() broken because _isConnected always false (may be fixed if I use rdflib.js SafenetworkWebApi)
   [ ] TODO disallow service creation with empty profile for all but www
   [ ] TODO [may be redundant - SAFE API changes coming] refactor to eliminate memory leaks (e.g. using 'finally')
+[ ] strip out console.log() statements beginning with 'DEBUG
 
 SafenetworkWebApi
 -----------------
@@ -48966,17 +48967,18 @@ const defaultPerms = {
       await window.safeMutableData.put(mdHandle, pmHandle, entriesHandle);
       let nameAndTag = await window.safeMutableData.getNameAndTag(mdHandle);
 
-      // TODO remove this block:
-      logLdp('DEBUG testing newly created service container, mdHandle: %s', mdHandle);
       // TODO BUG subfolder: try with 'posts/rand/', to chase bug in _getFolder() where we have a subfolder
-      let randText = 'posts/' + Date.now();
-      logLdp('DEBUG try insert a random filename', randText);
-      let nfsHandle = await window.safeMutableData.emulateAs(mdHandle, 'NFS');
-      logLdp('DEBUG 1 - create a file...');
-      let fileHandle = await window.safeNfs.create(nfsHandle, randText);
-      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle);
-      await window.safeNfs.insert(nfsHandle, fileHandle, randText);
-      logLdp('...done.');
+      /*
+      logLdp('DEBUG testing newly created service container, mdHandle: %s', mdHandle)
+      let randText = 'posts/' + Date.now()
+      logLdp('DEBUG try insert a random filename', randText)
+      let nfsHandle = await window.safeMutableData.emulateAs(mdHandle,'NFS')
+      logLdp('DEBUG 1 - create a file...')
+      let fileHandle = await window.safeNfs.create(nfsHandle, randText)
+      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle)
+      await window.safeNfs.insert(nfsHandle, fileHandle, randText)
+      logLdp('...done.')
+      */
 
       // Create an entry in rootContainer (fails if key exists for this container)
       await this.setMutableDataValue(rootMd, rootKey, nameAndTag.name.buffer);
@@ -49049,7 +49051,7 @@ const defaultPerms = {
       let servicesMd = await window.safeMutableData.newPublic(this.appHandle(), servicesMdName, SN_TAGTYPE_SERVICES);
 
       var enc = new TextDecoder();
-      logApi('DEBUG created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)));
+      logApi('created services MD with servicesMdName: %s', enc.decode(new Uint8Array(servicesMdName)));
 
       let servicesEntriesHandle = await window.safeMutableData.newEntries(this.appHandle());
 
@@ -49070,7 +49072,7 @@ const defaultPerms = {
 
       // TODO remove (test only):
       let r = await window.safeMutableData.getNameAndTag(servicesMd);
-      logApi('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name, ' (%s)', enc.decode(new Uint8Array(r.name)));
+      logApi('servicesMd created with tag: ', r.type_tag, ' and name: ', r.name, ' (%s)', enc.decode(new Uint8Array(r.name)));
 
       let publicNamesMd = await window.safeApp.getContainer(this.appHandle(), '_publicNames');
       let entryKey = this.makePublicNamesEntryKey(publicName);
@@ -49084,14 +49086,13 @@ const defaultPerms = {
 
       // TODO remove (test only):
       r = await window.safeMutableData.getNameAndTag(servicesMd);
-      logApi('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name);
-
-      logApi('DEBUG _publicNames entry created for %s', publicName);
-
-      logApi('DEBUG servicesMd for public name \'%s\' contains...', publicName);
-      await this.listMd(servicesMd, publicName + ' servicesMd');
-      logApi('DEBUG _publicNames MD contains...');
-      await this.listMd(publicNamesMd, '_publicNames MD');
+      /* logApi('DEBUG new servicesMd created with tag: ', r.type_tag, ' and name: ', r.name)
+      logApi('DEBUG _publicNames entry created for %s', publicName)
+      logApi('DEBUG servicesMd for public name \'%s\' contains...', publicName)
+      await this.listMd(servicesMd, publicName + ' servicesMd')
+      logApi('DEBUG _publicNames MD contains...')
+      await this.listMd(publicNamesMd, '_publicNames MD')
+      */
 
       return {
         key: entryKey,
@@ -50013,15 +50014,17 @@ class SafeServiceLDP extends ServiceInterface {
     logLdp('storageNfs()');
     try {
       this._storageNfsHandle = await window.safeMutableData.emulateAs((await this.storageMd()), 'NFS');
-      logLdp('DEBUG this.storageMd: %s', (await this.storageMd()));
-      logLdp('DEBUG this._storageNfsHandle: %s', this._storageNfsHandle);
-      let randText = 'rand/' + Date.now();
-      logLdp('DEBUG try insert a random filename', randText);
-      logLdp('DEBUG 1 - create a file...');
-      let fileHandle = await window.safeNfs.create(this._storageNfsHandle, randText);
-      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle);
-      await window.safeNfs.insert(this._storageNfsHandle, fileHandle, randText);
-      logLdp('...done.');
+      logLdp('this.storageMd: %s', (await this.storageMd()));
+      /* TODO remove debug code:
+      logLdp('DEBUG this._storageNfsHandle: %s', this._storageNfsHandle)
+      let randText = 'rand/' + Date.now()
+      logLdp('DEBUG try insert a random filename', randText)
+      logLdp('DEBUG 1 - create a file...')
+      let fileHandle = await window.safeNfs.create(this._storageNfsHandle, randText)
+      logLdp('DEBUG 2 - insert file fileHandle: %s', fileHandle)
+      await window.safeNfs.insert(this._storageNfsHandle, fileHandle, randText)
+      logLdp('...done.')
+      */
       return this._storageNfsHandle;
     } catch (err) {
       logLdp('Unable to access NFS storage for %s service: %s', this.getName(), err);
@@ -50276,15 +50279,15 @@ class SafeServiceLDP extends ServiceInterface {
     let docPath = this.safeWeb().nfsPathPart(docUri);
 
     try {
-      logLdp('DEBUG:  window.safeNfs.create()...');
+      //logLdp('DEBUG:  window.safeNfs.create()...')
       let fileHandle = await window.safeNfs.create((await this.storageNfs()), body);
       // mrhTODOx set file metadata (contentType) - how?
 
       // Add file to directory (by inserting fileHandle into container)
-      logLdp('DEBUG:  window.safeNfs.insert(nfsHandle,fileHandle,%s)...', docPath);
+      //logLdp('DEBUG:  window.safeNfs.insert(nfsHandle,fileHandle,%s)...',docPath)
       fileHandle = await window.safeNfs.insert((await this.storageNfs()), fileHandle, docPath);
 
-      logLdp('DEBUG:  this._updateFileInfo(...)...');
+      //logLdp('DEBUG:  this._updateFileInfo(...)...')
       this._updateFileInfo(fileHandle, docPath);
 
       // TODO implement LDP POST response https://www.w3.org/TR/ldp-primer/
