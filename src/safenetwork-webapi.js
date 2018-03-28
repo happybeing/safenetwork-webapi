@@ -125,7 +125,10 @@ localStorage.debug = '*'
 const debug = require('debug')
 const logApi = require('debug')('safe:web')  // Web API
 const logLdp = require('debug')('safe:ldp')  // LDP service
+const logRest = require('debug')('safe:rest')  // REST request/response
 const logTest = require('debug')('safe:test')  // Test output
+
+let extraDebug = false
 
 const SN_TAGTYPE_SERVICES = 15001 // TODO get these from the API CONSTANTS
 const SN_TAGTYPE_WWW = 15002
@@ -272,6 +275,9 @@ class SafenetworkWebApi {
   // @param a DOM API SAFEAppHandle, see window.safeApp.initialise()
   //
   setSafeApi (appHandle) {
+    if (this._appHandle) {
+      window.safeApp.free(this._appHandle)
+    }
     this.initialise()             // Clears active services (so DOM API handles will be discarded)
     this._appHandle = appHandle   // SAFE API application handle
   }
@@ -295,6 +301,18 @@ class SafenetworkWebApi {
   async initReadOnly (appConfig = untrustedAppConfig) {
     logApi('%s.initReadOnly(%O)...', this.constructor.name, appConfig)
 
+    // TODO remove when 'connection problems' solved (see dev forum )
+    if (extraDebug) {
+      // DEBUG CODE
+      logApi('DEBUG WARNING using connectAuthorised() NOT connect()')
+      let debugConfig = {
+        id:     "com.happybeing.plume.poc",
+        name:   "SAFE Plume (PoC)",
+        vendor: "com.happybeing"
+      }
+      return this.simpleAuthorise(debugConfig, defaultPerms)
+    }
+
     let tmpAppHandle
     try {
       tmpAppHandle = await window.safeApp.initialise(appConfig, (newState) => {
@@ -314,6 +332,7 @@ class SafenetworkWebApi {
       return this._appHandle
     } catch (err) {
       logApi('WARNING: ', err)
+      this.setSafeApi(null)
       throw (err)
     }
   }
@@ -1123,8 +1142,11 @@ class SafenetworkWebApi {
         if (!options.method) {
           options.method = 'GET'
         }
+
+        logRest('%s %s %s', service.getIdString(), options.method, docUri)
         let handler = service.getHandler(options.method)
         response = await handler.call(service, docUri, options)
+        logRest('    response: %s %s', response.status, response.statusText)
       }
     } catch (err) {
       logApi('%s._fetch() error: %s', this.constructor.name, err)
@@ -1603,8 +1625,10 @@ class SafeServiceLDP extends ServiceInterface {
       serviceValue = nameAndTag.name.buffer
       await this.safeWeb().setMutableDataValue(servicesMd, serviceKey, serviceValue)
       // TODO remove this excess DEBUG:
-      logLdp('Pubic name \'%s\' services:', publicName)
-      await this.safeWeb().listMd(servicesMd, publicName + ' public name MD')
+      if (extraDebug) {
+        logLdp('Pubic name \'%s\' services:', publicName)
+        await this.safeWeb().listMd(servicesMd, publicName + ' public name MD')
+      }
     }
     return serviceValue
   }
@@ -1908,15 +1932,17 @@ class SafeServiceLDP extends ServiceInterface {
     let docPath = this.safeWeb().nfsPathPart(docUri)
 
     try {
-      //logLdp('DEBUG:  window.safeNfs.create()...')
+      this.safeWeb().listContainer('_publicNames') // TODO remove this debug
+
+      // logLdp('DEBUG:  window.safeNfs.create()...')
       let fileHandle = await window.safeNfs.create(await this.storageNfs(), body)
       // mrhTODOx set file metadata (contentType) - how?
 
       // Add file to directory (by inserting fileHandle into container)
-      //logLdp('DEBUG:  window.safeNfs.insert(nfsHandle,fileHandle,%s)...',docPath)
+      // logLdp('DEBUG:  window.safeNfs.insert(nfsHandle,fileHandle,%s)...',docPath)
       fileHandle = await window.safeNfs.insert(await this.storageNfs(), fileHandle, docPath)
 
-      //logLdp('DEBUG:  this._updateFileInfo(...)...')
+      // logLdp('DEBUG:  this._updateFileInfo(...)...')
       this._updateFileInfo(fileHandle, docPath)
 
       // TODO implement LDP POST response https://www.w3.org/TR/ldp-primer/
