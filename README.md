@@ -11,7 +11,7 @@ This is a WORK IN PROGRESS but usable if you read the docs in the comments. Some
 
 ## Usage example:
 
-```	
+```
 // Include from JS:
 var Safenetwork = new require('safenetwork-webapi')
 
@@ -20,7 +20,9 @@ var Safenetwork = new require('safenetwork-webapi')
 
 // Then in App Javascript:
 var Safenetwork = new SafenetworkWebApi
-const fetch = Safenetwork.protoFetch.bind(Safenetwork)
+const fetch = SafenetworkWebApi.protoFetch  // fetch() that supports 'safe:' protocol
+fetch.protocols.safe = Safenetwork.fetch.bind(Safenetwork)
+
 ```
 
 ### Usage with rdflib.js:
@@ -28,12 +30,12 @@ const fetch = Safenetwork.protoFetch.bind(Safenetwork)
 ```
 var Safenetwork = new SafenetworkWebApi
 var $rdf = require('rdflib')
-$rdf.Safenetwork = Safenetwork
+$rdf.appFetch = Safenetwork.fetch.bind(Safenetwork) // Hook for rdflib Fetcher
 ```
 
 ### Usage in your app
 
-The above enable support for 'safe:' URIs whenever you use window.fetch(), 
+The above enable support for 'safe:' URIs whenever you use window.fetch(),
 and if you also assign $rdf.Safenetwork within rdflib.js Fetcher class.
 
 If your app uses other means for LDP requests, such as XmlHttpRequest,
@@ -67,7 +69,7 @@ NOTES:
 	* if the service is active, it calls handler of the service instance (or if not defaults to safeApp.webFetch())
 	* Example: handles URIs for an LDP service on SAFE Network, such as  safe://solid.happybeing/profile/card#me
 		* ???check: will automatically try to authorise with SAFE Network on a 404 error
-		* attempts to provide and LDP compatible storage on SAFE Network 
+		* attempts to provide and LDP compatible storage on SAFE Network
 
 * class SafeServiceLDP
 	* holds application state for the SAFE API
