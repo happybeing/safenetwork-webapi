@@ -23,6 +23,9 @@ var Safenetwork = new SafenetworkWebApi
 const fetch = SafenetworkWebApi.protoFetch  // fetch() that supports 'safe:' protocol
 fetch.protocols.safe = Safenetwork.fetch.bind(Safenetwork)
 
+window.addEventListener("beforeunload", function (event) {
+  Safenetwork.setSafeApi(null)  // Ensures network connections are freed
+});
 ```
 
 ### Usage with rdflib.js:
@@ -31,6 +34,10 @@ fetch.protocols.safe = Safenetwork.fetch.bind(Safenetwork)
 var Safenetwork = new SafenetworkWebApi
 var $rdf = require('rdflib')
 $rdf.appFetch = Safenetwork.fetch.bind(Safenetwork) // Hook for rdflib Fetcher
+
+window.addEventListener("beforeunload", function (event) {
+  Safenetwork.setSafeApi(null)  // Ensures network connections are freed
+});
 ```
 
 ### Usage in your app
