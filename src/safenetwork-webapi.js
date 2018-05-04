@@ -89,6 +89,7 @@ Work In Progress
 [ ]   3. test access to LDP container by NON-owner (ie while logged out)
 [/] provide app with function SafenetworkWebApi.setupServiceOnHost()
 [ ] try to use LDP to update a container that is also accessible by www service!
+[ ] LDP: add support for range requests (Peruse webFetch has some) https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests
 [ ] revise setup to create default containers, see: https://github.com/solid/solid-spec/blob/master/recommendations-server.md
 [ ] review CORS requirements (relevance to SAFE?): https://github.com/solid/solid-spec/blob/master/recommendations-server.md
 [ ] TODO BUGS:
@@ -388,6 +389,7 @@ class SafenetworkWebApi {
       return this._appHandle
     } catch (err) {
       logApi('WARNING: ', err)
+      this.setSafeApi(null)
       throw (err)
     }
   }
@@ -2468,14 +2470,16 @@ logLdp('calling _addListingEntry for %s', itemName)
 // module.exports.safeWeb = safeWeb
 
 // Usage: create the web API and install the built in services
-let safeWeb = new SafenetworkWebApi()
+// let safeWeb = new SafenetworkWebApi()
 
 module.exports = SafenetworkWebApi
+/* TODO remove this and all refs to safeWeb (for current usage see README.md)
 module.exports.safeWeb = safeWeb
 module.exports.setSafeApi = SafenetworkWebApi.prototype.setSafeApi.bind(safeWeb)
 module.exports.listContainer = SafenetworkWebApi.prototype.listContainer.bind(safeWeb)
 module.exports.testsNoAuth = SafenetworkWebApi.prototype.testsNoAuth.bind(safeWeb)
 module.exports.testsAfterAuth = SafenetworkWebApi.prototype.testsAfterAuth.bind(safeWeb)
+*/
 
 module.exports.isFolder = safeUtils.isFolder
 module.exports.docpart = safeUtils.docpart
@@ -2498,8 +2502,8 @@ const protoFetch = require('proto-fetch')
 // map protocols to fetch()
 const fetch = protoFetch({
   http: httpFetch,
-  https: httpFetch,
-  safe: safeWeb.fetch.bind(safeWeb)
+  https: httpFetch
+//  safe: safeWeb.fetch.bind(safeWeb)
 //  https: Safenetwork.fetch.bind(Safenetwork), // Debugging with SAFE mock browser
 })
 
