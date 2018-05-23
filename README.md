@@ -1,10 +1,12 @@
-# safenetwork-webapi
+[![js-standard-style](https://img.shields.io/badge/code%20style-standard-brightgreen.svg?style=flat)](https://github.com/standard/standard)
 
-SAFE Network web API with RESTful services (via fetch() in the browser).
+# What's This?
 
-Adds support for the `safe:` URI schema to fetch() (and rdflib.js Fetcher using this [rdflib.js fork](https://github.com/theWebalyst/rdflib.js/tree/feature/safenetwork)).
+A SAFE Network web API with RESTful services (via fetch() in the browser):
 
-Includes [LDP](https://www.w3.org/TR/ldp/) service which works with Solid apps via window.fetch() or
+- Adds support for the `safe:` URI schema to fetch() (and rdflib.js Fetcher using this [rdflib.js fork](https://github.com/theWebalyst/rdflib.js/tree/feature/safenetwork)).
+
+- Includes [LDP](https://www.w3.org/TR/ldp/) service which works with Solid apps via window.fetch() or
 rdflib.js (for an example see this [solid-plume fork](https://github.com/theWebalyst/solid-plume/tree/safenetwork-poc)).
 
 This is a WORK IN PROGRESS but usable if you read the docs in the comments. Some basic usage is included below, but you should refer to the comments in the source, and the solid-plume example above until documentation is available.
@@ -85,3 +87,17 @@ NOTES:
 		* enabled:		false disables support for safe: URI
 		* debug:			true enables console debug messages
 		* authOnStart:	true attempt authorisation on SAFE Network immediately
+
+# Contributions
+Pull requests are welcome for outstanding issues and feature requests. Please note that contributions must be subject to the Project License (see below), and that if an incompatible license is present in your contribution it will be rejected.
+
+**IMPORTANT:** By submitting a pull request, you will be offering code under either the Project License or a license that is compatible with and does not restrict the Project License of any existing files in the Project, or of any code in the Project that is substantially similar to your contribution. If your submission is not compatible with the Project License, the license specified below (under 'License') will apply to your submission by default.
+
+Before submitting your code please consider using `Standard.js` formatting. You may also find it helps to use an editor with support for Standard.js when developing and testing. An easy way is just to use [Atom IDE](https://atom.io/packages/atom-ide-ui) with the package [ide-standardjs] (and optionally [standard-formatter](https://atom.io/packages/standard-formatter)). Or you can install NodeJS [Standard.js](https://standardjs.com/).
+
+[![js-standard-style](https://cdn.rawgit.com/feross/standard/master/badge.svg)](https://github.com/standard/standard)
+
+# Project License
+This project is made available under the [GPL-3.0 LICENSE](https://opensource.org/licenses/GPL-3.0) except for individual files which contain their own license so long as that file license is compatible with GPL-3.0. 
+
+The responsibility for checking this licensing is valid and that your use of this code complies lies with any person and organisation making any use of it.
