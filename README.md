@@ -10,6 +10,16 @@ A SAFE Network web API with RESTful services (via fetch() in the browser):
 rdflib.js (for an example see this [solid-plume fork](https://github.com/theWebalyst/solid-plume/tree/safenetwork-poc)).
 
 This is a WORK IN PROGRESS but usable if you read the docs in the comments. Some basic usage is included below, but you should refer to the comments in the source, and the solid-plume example above until documentation is available.
+## Please Note
+
+This library was developed as part of a proof of concept and is currently being replaced by two new
+libraries:
+
+- [safenetwork-web](https://github.com/theWebalyst/safenetwork-web) for NodeJS web/browser: application, file system and RESTful web services for SAFE Network. A complete functional replacement for this module.
+
+- [safenetworkjs](https://github.com/theWebalyst/safenetworkjs) for NodeJS: application, file system and utility API for SAFE Network, on which safenetwork-web is built.
+
+When the above modules have been completed this safenetwork-webapi will be depracated.
 
 ## Usage example:
 
