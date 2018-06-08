@@ -32,6 +32,7 @@
     "webpack": "^3.8.1"
   },
   "dependencies": {
+    "babel-loader": "^7.1.4",
     "debug": "^3.1.0",
     "isomorphic-fetch": "^2.2.1",
     "mime-types": "^2.1.18",
