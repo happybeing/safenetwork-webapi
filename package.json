@@ -38,7 +38,7 @@
     "mime-types": "^2.1.18",
     "path": "^0.12.7",
     "proto-fetch": "^1.0.0",
-    "rdflib": "^0.16.6",
+    "rdflib": "^2.2.20",
     "solid-namespace": "^0.1.0",
     "string": "^3.3.3",
     "url": "^0.11.0"
